@@ -1,146 +1,57 @@
-#pragma once
+#pragma oncefile
+#include "BlockManager.hpp"
+#include "INode.hpp"
+#include "SuperBlock.hpp"
 #include "VDisk.hpp"
+#include "macros.hpp"
+#include <algorithm>
 #include <cstdint>
+#include <cstring>
+#include <format>
+#include <iostream>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
+#include <string>
 
-constexpr uint32_t BLOCK_SIZE = 16 * 1024;
-
-constexpr uint64_t MAGIC_NUMBER = 0xEA6191;
-constexpr uint64_t VERSION = 7;
-
-constexpr uint32_t INODE_SIZE = 256;
-constexpr uint32_t INODE_BLOCKS_COUNT = 4 * 1024;
-
-constexpr uint16_t DIRITEM_SIZE = 64;
-
-union SuperBlock {
-    struct {
-        uint64_t magic_number;
-        uint64_t version;
-
-        uint16_t disk_size_gb;
-        uint32_t block_size;
-        uint32_t total_blocks;
-        uint32_t bits_per_block;
-
-        uint32_t super_block_start_lba;
-        uint16_t super_blocks_cnt;
-
-        uint32_t bitmap_block_start_lba;
-        uint16_t bitmap_blocks_cnt;
-
-        uint32_t inode_size;
-        uint32_t inodes_per_block;
-        uint64_t inodes_cnt;
-        uint64_t free_inodes;
-        uint32_t inode_valid_block_start_lba;
-        uint32_t inode_valid_blocks_cnt;
-        uint32_t inode_block_start_lba;
-        uint32_t inode_blocks_cnt;
-
-        uint32_t basic_blocks_cnt;
-
-        uint32_t root_inode;
-        uint32_t free_blocks;
-    } data;
-    char padding[BLOCK_SIZE];
-};
-static_assert(sizeof(SuperBlock) == BLOCK_SIZE);
-
-inline const SuperBlock create_superblock(uint32_t disk_size_gb) {
-    SuperBlock rst;
-    std::memset(&rst, 0, sizeof(SuperBlock));
-
-    rst.data.magic_number = MAGIC_NUMBER;
-    rst.data.version = VERSION;
-
-    rst.data.disk_size_gb = disk_size_gb;
-    rst.data.block_size = BLOCK_SIZE;
-    rst.data.total_blocks = ((uint64_t)disk_size_gb << 30) / rst.data.block_size;
-    rst.data.bits_per_block = rst.data.block_size * 8;
-
-    rst.data.super_block_start_lba = 0;
-    rst.data.super_blocks_cnt = 1;
-
-    rst.data.bitmap_block_start_lba = rst.data.super_blocks_cnt;
-    rst.data.bitmap_blocks_cnt = rst.data.total_blocks / rst.data.bits_per_block;
-
-    rst.data.inode_size = INODE_SIZE;
-    rst.data.inodes_per_block = rst.data.block_size / rst.data.inode_size;
-    rst.data.inodes_cnt = rst.data.inodes_per_block * INODE_BLOCKS_COUNT;
-    rst.data.free_inodes = rst.data.inodes_cnt;
-    rst.data.inode_valid_block_start_lba =
-        rst.data.bitmap_block_start_lba + rst.data.bitmap_blocks_cnt;
-    rst.data.inode_valid_blocks_cnt =
-        (rst.data.inodes_cnt + rst.data.bits_per_block - 1) / rst.data.bits_per_block;
-    rst.data.inode_block_start_lba =
-        rst.data.inode_valid_block_start_lba + rst.data.inode_valid_blocks_cnt;
-    rst.data.inode_blocks_cnt = INODE_BLOCKS_COUNT;
-
-    rst.data.basic_blocks_cnt = rst.data.super_blocks_cnt + rst.data.bitmap_blocks_cnt +
-                                rst.data.inode_valid_blocks_cnt + rst.data.inode_blocks_cnt;
-
-    rst.data.root_inode = 0;
-    rst.data.free_blocks = rst.data.total_blocks - rst.data.basic_blocks_cnt;
-
-    return rst;
-}
-
-union INode {
-    struct {
-        uint64_t ID;
-        uint64_t prev_inode;
-        uint32_t block_lba;
-        uint32_t link_cnt;
-        uint8_t type;
-        uint64_t size;
-    } data;
-    char padding[INODE_SIZE];
-};
-static_assert(sizeof(INode) == INODE_SIZE);
+// TODO:
+// 参数设定合理性检查
+// uintN_t 溢出冗余检查
+// 减少buffer使用 -> std::array<char>?
 
 struct DirItem {
-    uint64_t inode;
+    uint64_t inode_id;
     uint8_t valid;
-    char name[54];
+    char name[FILENAME_SIZE];
+    DirItem(uint64_t _inode_id = 0, std::string _name = "") {
+        std::memset(this, 0, DIRITEM_SIZE);
+        inode_id = _inode_id;
+        valid = 1;
+        std::memcpy(name, _name.data(), std::min((size_t)FILENAME_SIZE, _name.size()));
+    }
 };
 static_assert(sizeof(DirItem) == DIRITEM_SIZE);
 
-inline INode create_INode(uint32_t _ID) {
-    INode rst{.data{
-        .ID = _ID,
-        .link_cnt = 0,
-        .size = 0,
-    }};
-    std::memset(&rst, 0, sizeof(rst));
-    return rst;
-}
-
-class BPNodeHeader {
-    uint8_t is_leaf;
-};
-
 class FileSys {
-    friend int main();
+    friend int main(); // HACK: Just added when DEBUG.
 
 public:
-    FileSys(VDisk &_disk) : disk(_disk) {
+    FileSys(VDisk &_disk) : block_manager(_disk, super_block) {
         spdlog::info("[FileSys] 文件系统启动.");
 
         spdlog::info("[FileSys] 读取Super Block.");
-        disk.read_block(0, BLOCK_SIZE, reinterpret_cast<char *>(&super_block));
+        block_manager.read_block(0, &super_block);
 
-        if (super_block.data.magic_number != MAGIC_NUMBER || super_block.data.version != VERSION ||
-            super_block.data.block_size != BLOCK_SIZE ||
-            super_block.data.inode_size != INODE_SIZE ||
-            super_block.data.inode_blocks_cnt != INODE_BLOCKS_COUNT) {
+        if (super_block.valid()) {
             spdlog::info("[FileSys] 文件系统不匹配, 执行虚拟硬盘格式化.");
-            format(disk.get_disk_size());
+            format();
             spdlog::info("[FileSys] 重新读取Super Block.");
-            read_block(0, &super_block);
+            block_manager.read_block(0, &super_block);
         }
 
+        show_super_block_info();
+    }
+
+    void show_super_block_info() {
         spdlog::debug("[FileSys] 虚拟硬盘Super Block信息:");
         spdlog::debug("[FileSys] Magic Number: 0x{:X}.", super_block.data.magic_number);
         spdlog::debug("[FileSys] Version: {}.", super_block.data.version);
@@ -165,39 +76,51 @@ public:
         spdlog::debug("[FileSys] Basic Blocks Count: {}.", super_block.data.basic_blocks_cnt);
         spdlog::debug("[FileSys] Root INode: 0x{:X}.", super_block.data.root_inode);
         spdlog::debug("[FileSys] Free Blocks: {}.", super_block.data.free_blocks);
-
-        cur_inode = super_block.data.root_inode;
     }
 
-    void format(uint32_t disk_size) {
+    void format() {
         spdlog::info("[FileSys] 进行虚拟硬盘格式化.");
+        char buffer[BLOCK_SIZE];
+
         spdlog::debug("[FileSys] 清空虚拟硬盘.");
-        disk.clear();
+        block_manager.clear();
 
         spdlog::debug("[FileSys] 写入Super Block.");
-        super_block = create_superblock(disk.get_disk_size());
-        write_block(0, &super_block);
+        super_block = create_superblock(block_manager.get_disk_size());
+        block_manager.write_block(0, &super_block); // NOTE:假设 SuperBlock 恒为一块
 
         spdlog::debug("[FileSys] 写入位图.");
-        char buffer[BLOCK_SIZE];
-        std::ranges::fill(buffer, 0);
-        // FIX:过多basic_block超过第一块bitmap
-        for (uint64_t i = 0; i < super_block.data.basic_blocks_cnt / 8; i++)
-            buffer[i] = 0xff;
-        uint32_t remaining_bits = super_block.data.basic_blocks_cnt % 8;
-        if (remaining_bits > 0)
-            buffer[super_block.data.basic_blocks_cnt / 8] |= (0xff << (8 - remaining_bits));
-        write_block(super_block.data.super_blocks_cnt, buffer);
-        std::ranges::fill(buffer, 0);
 
-        for (uint32_t i = 1; i < super_block.data.bitmap_blocks_cnt; i++)
-            write_block(i + super_block.data.bitmap_block_start_lba, buffer);
+        uint64_t full_bitmap_blocks =
+            super_block.data.basic_blocks_cnt / super_block.data.bits_per_block;
+        uint64_t remaining_blocks =
+            super_block.data.basic_blocks_cnt % super_block.data.bits_per_block;
+        uint64_t remaining_bytes = remaining_blocks / 8;
+        uint64_t remaining_bits = remaining_blocks % 8;
+
+        // 全1 Bitmap Block
+        std::ranges::fill(buffer, 0xff);
+        for (uint64_t i = 0; i < full_bitmap_blocks; i++)
+            block_manager.write_block(i + super_block.data.bitmap_block_start_lba, buffer);
+
+        //  部分1 Bitmap Block
+        std::ranges::fill(buffer, 0);
+        for (uint64_t i = 0; i < remaining_bytes; i++)
+            buffer[i] = 0xff;
+
+        if (remaining_bits)
+            buffer[remaining_bytes] |= (0xff << (8 - remaining_bits));
+        block_manager.write_block(super_block.data.bitmap_block_start_lba + full_bitmap_blocks, buffer);
+
+        // 全0 BitMap Block
+        std::ranges::fill(buffer, 0);
+        for (uint64_t i = full_bitmap_blocks + (remaining_bytes || remaining_bits);
+             i < super_block.data.bitmap_blocks_cnt; i++)
+            block_manager.write_block(i + super_block.data.bitmap_block_start_lba, buffer);
 
         spdlog::debug("[FileSys] 写入INode位图.");
-        for (uint32_t i = 1; i < super_block.data.inode_valid_blocks_cnt; i++)
-            write_block(i + super_block.data.inode_valid_blocks_cnt, buffer);
-        buffer[0] = 0x80;
-        write_block(super_block.data.inode_valid_block_start_lba, buffer);
+        for (uint64_t i = 0; i < super_block.data.inode_valid_blocks_cnt; i++)
+            block_manager.write_block(i + super_block.data.inode_valid_block_start_lba, buffer);
 
         spdlog::debug("[FileSys] 创建根目录.");
         create_dir(super_block.data.root_inode, "/");
@@ -205,205 +128,194 @@ public:
         spdlog::info("[FileSys] 格式化完成.");
     }
 
-    // FIX:
+private:
     void create_dir(uint32_t path_inode_id, std::string name) {
         spdlog::info("[FileSys] 创建文件夹.");
         spdlog::debug("[FileSys] 目录名: {}, 父目录INode: {}.", name, path_inode_id);
 
         uint64_t inode_id;
-        if (!allocate_inode(inode_id))
+        if (!block_manager.allocate_inode(inode_id)) {
+            spdlog::warn("[FileSys] 无空闲INode.");
             return;
+        }
 
-        uint32_t block_lba;
-        if (!allocate_block(block_lba))
-            return;
+        spdlog::debug("[FileSys] 填充INode信息.");
+        INode inode(inode_id, path_inode_id);
+        inode.file_type = FileType::Directory;
+        inode.storage_type = StorageType::Inline;
+        inode.block_lba = 0; // 不使用
+        inode.size = 2 * super_block.data.diritem_size;
 
-        uint32_t inode_block_lba =
-            super_block.data.inode_block_start_lba + inode_id / super_block.data.inodes_per_block;
-
-        char buffer[BLOCK_SIZE];
+        spdlog::debug("[FileSys] 目录写入INode.");
+        DirItem basic_dir[2] = {DirItem(inode_id, "."), DirItem(path_inode_id, "..")};
+        std::memcpy(inode.inline_data, basic_dir, 2 * DIRITEM_SIZE);
 
         spdlog::debug("[FileSys] INode写入硬盘.");
-        INode inode = create_INode(inode_id);
-        inode.data.block_lba = block_lba;
-        inode.data.prev_inode = path_inode_id;
-        inode.data.size = 2;
-
-        read_block(inode_block_lba, buffer);
+        char buffer[BLOCK_SIZE];
+        uint32_t inode_block_lba =
+            super_block.data.inode_block_start_lba + inode_id / super_block.data.inodes_per_block;
+        block_manager.read_block(inode_block_lba, buffer);
         std::memcpy(buffer + (inode_id % super_block.data.inodes_per_block) *
                                  super_block.data.inode_size,
                     &inode, sizeof(inode));
-        write_block(inode_block_lba, buffer);
-
-        spdlog::debug("[FileSys] 目录写入硬盘.");
-        std::memset(buffer, 0, BLOCK_SIZE);
-        DirItem basic_dir[2] = {{
-                                    .inode = inode_id,
-                                    .valid = 1,
-                                    .name = ".",
-                                },
-                                {
-                                    .inode = path_inode_id,
-                                    .valid = 1,
-                                    .name = "..",
-                                }};
-        std::memcpy(buffer, basic_dir, 2 * DIRITEM_SIZE);
-        write_block(block_lba, buffer);
+        block_manager.write_block(inode_block_lba, buffer);
 
         if (name == "/")
             return;
 
-        // TODO: 父目录文件添加项
+        dir_add_item(path_inode_id, inode_id, name);
     }
 
     ~FileSys() {
-        // disk.clear();
+        // block_manager.clear();
     }
 
-private:
-    void read_block(uint64_t lba, void *buffer) {
-        disk.read_block(lba, super_block.data.block_size, reinterpret_cast<char *>(buffer));
-    }
+    // FIX:现在size不能超过BLOCK_SIZE
+    bool inode_app_data(uint64_t inode_id, void *data, uint64_t size) {
+        spdlog::info("[FileSys] 向文件追加数据.");
+        spdlog::debug("[FileSys] INode ID: {:X}.", inode_id);
 
-    void write_block(uint64_t lba, void *buffer) {
-        disk.write_block(lba, super_block.data.block_size, reinterpret_cast<char *>(buffer));
-    }
-
-    // HACK:现在这个申请方式就是狗市
-    bool allocate_block(uint32_t &lba) {
-        spdlog::info("[FileSys] 申请盘块.");
-        if (!super_block.data.free_blocks) {
-            spdlog::warn("[FileSys] 无空闲盘块.");
-            return false;
-        }
-
-        uint32_t bitmap_idx;
-        uint32_t byte_idx;
-        uint32_t bit_idx;
-
+        spdlog::debug("[FileSys] 从硬盘中读取INode.");
         char buffer[BLOCK_SIZE];
-
-        bool find = false;
-        for (bitmap_idx = 0; bitmap_idx < super_block.data.bitmap_blocks_cnt; bitmap_idx++) {
-            read_block(bitmap_idx + super_block.data.bitmap_block_start_lba, buffer);
-            for (byte_idx = 0; byte_idx < BLOCK_SIZE; byte_idx++) {
-                if ((uint8_t)buffer[byte_idx] == 0xff)
-                    continue;
-                for (bit_idx = 0; bit_idx < 8; bit_idx++) {
-                    if (~buffer[byte_idx] & (1 << (7 - bit_idx))) {
-                        find = true;
-                        break;
-                    }
-                }
-                if (find)
-                    break;
-            }
-            if (find)
-                break;
-        }
-
-        lba = bitmap_idx * super_block.data.bits_per_block + byte_idx * 8 + bit_idx;
-        spdlog::info("[FileSys] 在{}号位图第{}字节第{}位找到空闲位, lba:{}", bitmap_idx, byte_idx,
-                     bit_idx, lba);
-
-        spdlog::debug("[FileSys] 虚拟硬盘重新写入Super Block.");
-        super_block.data.free_blocks--;
-        write_block(0, &super_block);
-
-        spdlog::debug("[FileSys] 更新位图.");
-        buffer[byte_idx] |= (1 << (7 - bit_idx));
-        write_block(super_block.data.bitmap_block_start_lba + bitmap_idx, buffer);
-
-        return true;
-    }
-
-    // FIX: 这对吗?????????
-    bool dir_add_item(uint64_t dir_inode_id, uint64_t item_inode_id, std::string item_name) {
-        char buffer[BLOCK_SIZE];
-        uint32_t dir_inode_block_lba = dir_inode_id / super_block.data.inodes_per_block +
-                                       super_block.data.inode_block_start_lba;
-        INode dir_inode;
-        read_block(dir_inode_block_lba, buffer);
-        std::memcpy(&dir_inode,
-                    buffer + (dir_inode_id % super_block.data.inodes_per_block) *
+        uint32_t dir_inode_block_lba =
+            inode_id / super_block.data.inodes_per_block + super_block.data.inode_block_start_lba;
+        INode inode;
+        block_manager.read_block(dir_inode_block_lba, buffer);
+        std::memcpy(&inode,
+                    buffer + (inode_id % super_block.data.inodes_per_block) *
                                  super_block.data.inode_size,
                     sizeof(INode));
-        // TODO: DIRITEM_SIZE写入Super Block
-        if (dir_inode.data.size == super_block.data.block_size / DIRITEM_SIZE)
-            return false;
 
-        dir_inode.data.size++;
-        std::memcpy(buffer + (dir_inode_id % super_block.data.inodes_per_block) *
-                                 super_block.data.inode_size,
-                    &dir_inode, sizeof(INode));
+        bool success = false;
 
-        read_block(dir_inode.data.block_lba, buffer);
-        DirItem new_item = {
-            .inode = item_inode_id,
-            .valid = 1,
-        };
-        // FIX: 使用魔法数 54
-        std::memcpy(new_item.name, item_name.data(), std::min(item_name.size(), (size_t)54));
-        std::memcpy(buffer + (dir_inode.data.size - 1) * DIRITEM_SIZE, &new_item, DIRITEM_SIZE);
-        write_block(dir_inode.data.block_lba, buffer);
-
-        return true;
-    }
-
-    bool allocate_inode(uint64_t &inode_id) {
-        spdlog::info("[FileSys] 申请空闲INode.");
-
-        if (super_block.data.free_inodes == 0) {
-            spdlog::warn("[FileSys] 无空闲INode, 申请失败.");
-            return false;
-        }
-
-        char buffer[BLOCK_SIZE];
-        uint64_t bitmap_idx;
-        uint32_t byte_idx;
-        uint32_t bit_idx;
-
-        bool find = false;
-        for (bitmap_idx = 0; bitmap_idx < super_block.data.inode_valid_blocks_cnt; bitmap_idx++) {
-            read_block(bitmap_idx + super_block.data.inode_valid_block_start_lba, buffer);
-            for (byte_idx = 0; byte_idx < super_block.data.block_size; byte_idx++) {
-                if ((uint8_t)buffer[byte_idx] == 0xff)
-                    continue;
-                for (bit_idx = 0; bit_idx < 8; bit_idx++) {
-                    if (~(uint8_t)buffer[byte_idx] & (1 << (7 - bit_idx))) {
-                        find = true;
-                        break;
-                    }
-                }
-                if (find)
-                    break;
+        // TODO:
+        switch (inode.storage_type) {
+        case StorageType::Inline:
+            if (inode.size + size <= super_block.data.inode_data_size) {
+                std::memcpy(inode.inline_data + inode.size, data, size);
+                success = true;
+            } else {
+                // FIX: 追加大量数据可能导致跳过Direct直接使用BTree
+                uint64_t block_lba;
+                if (!block_manager.allocate_block(block_lba))
+                    return false;
+                inode.storage_type = StorageType::Direct;
+                inode.block_lba = block_lba;
+                std::memset(buffer, 0, BLOCK_SIZE);
+                std::memcpy(buffer, inode.inline_data, inode.size);
+                std::memset(inode.inline_data, 0, inode.size);
+                std::memcpy(buffer + inode.size, data, size);
+                block_manager.write_block(block_lba, buffer);
+                success = true;
             }
-            if (find)
-                break;
+            break;
+
+        case StorageType::Direct:
+            if (inode.size + size <= super_block.data.block_size) {
+                block_manager.read_block(inode.block_lba, buffer);
+                std::memcpy(buffer + inode.size, data, size);
+                block_manager.write_block(inode.block_lba, buffer);
+                success = true;
+                // TODO:
+            } else {
+            }
+            break;
+
+        case StorageType::BTree:
+            break;
         }
 
-        inode_id = bitmap_idx * super_block.data.bits_per_block + byte_idx * 8 + bit_idx;
+        if (success)
+            inode.size += size;
 
-        buffer[byte_idx] |= (1 << (7 - bit_idx));
-        write_block(bitmap_idx + super_block.data.inode_valid_block_start_lba, buffer);
+        spdlog::debug("[FileSys] INode写回硬盘.");
+        std::memcpy(buffer + (inode_id % super_block.data.inodes_per_block) *
+                                 super_block.data.inode_size,
+                    &inode, sizeof(INode));
+        block_manager.write_block(dir_inode_block_lba, buffer);
 
-        return true;
+        return false;
     }
 
+    void list_directory(uint64_t path_inode_id) {
+        spdlog::info("[FileSys] 陈列目录项.");
+
+        INode inode;
+        read_inode(path_inode_id, &inode);
+        spdlog::debug("[FileSys] INode Size: {} B", inode.size);
+
+        uint64_t size;
+        DirItem items[BLOCK_SIZE / DIRITEM_SIZE];
+        for (uint64_t i = 0; i * BLOCK_SIZE <= inode.size; i++) {
+            inode_read_data(inode, i, items, size);
+            for (uint32_t j = 0; j < size / DIRITEM_SIZE; j++) {
+                std::cout << std::format("{:9d} {}\n", items[j].inode_id, items[j].name);
+            }
+        }
+    }
+
+    // TODO:
+    bool dir_add_item(uint64_t dir_inode_id, uint64_t item_inode_id, std::string item_name) {
+        spdlog::info("[FileSys] 目录添加项.");
+
+        spdlog::debug("[FileSys] 填充目录项信息.");
+        DirItem new_item(item_inode_id, item_name);
+
+        inode_app_data(dir_inode_id, &new_item, super_block.data.diritem_size);
+
+        return false;
+    }
+
+    // 好像没什么用.
     bool is_empty_block(uint32_t lba) {
         char buffer[BLOCK_SIZE];
         uint32_t bitmap_lba =
             lba / super_block.data.bits_per_block + super_block.data.bitmap_block_start_lba;
         uint32_t byte_idx = (lba % super_block.data.bits_per_block) / 8;
         uint8_t bit_idx = lba % 8;
-        read_block(bitmap_lba, buffer);
+        block_manager.read_block(bitmap_lba, buffer);
 
         bool is_occupied = buffer[byte_idx] & (1 << (7 - bit_idx));
         return !is_occupied;
     }
 
+    void read_inode(uint64_t inode_id, INode *p) {
+        char buffer[BLOCK_SIZE];
+        uint64_t lba =
+            inode_id / super_block.data.inodes_per_block + super_block.data.inode_block_start_lba;
+        uint64_t offset =
+            inode_id % super_block.data.inodes_per_block * super_block.data.inode_size;
+        block_manager.read_block(lba, buffer);
+        std::memcpy(p, buffer + offset, super_block.data.inode_size);
+    }
+
+    bool inode_read_data(const INode &inode, uint64_t block_idx, void *buffer, uint64_t &size) {
+        spdlog::debug("[FileSys] 读取INode信息, INode ID: 0x{:X}, 盘块号: {}.", inode.ID,
+                      block_idx);
+        if (inode.size < block_idx * super_block.data.block_size) {
+            spdlog::warn("[FileSys] 盘块超出INode持有范围.");
+            return false;
+        }
+
+        switch (inode.storage_type) {
+        case StorageType::Inline:
+            size = inode.size;
+            std::memcpy(buffer, inode.inline_data, size);
+            break;
+        case StorageType::Direct:
+            size = inode.size;
+            block_manager.read_block(inode.block_lba, buffer);
+            break;
+        // TODO:
+        case StorageType::BTree:
+            break;
+        }
+
+        spdlog::debug("[FileSys] 读取完成.");
+        return true;
+    }
+
 private:
-    VDisk &disk;
     SuperBlock super_block;
-    uint32_t cur_inode;
+    BlockManager block_manager;
 };
