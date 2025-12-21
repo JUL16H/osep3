@@ -7,13 +7,14 @@ void init_logger() {
     spdlog::set_default_logger(logger);
     spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] %v");
     spdlog::set_level(spdlog::level::trace);
+    spdlog::flush_on(spdlog::level::trace);
 }
 
 int main() {
     init_logger();
     spdlog::debug("{}", std::string(30, '=') + " Program Start " + std::string(30, '='));
 
-    VDisk disk(4096, BLOCK_SIZE, "vdisk.img");
+    IDisk disk(4096, BLOCK_SIZE, "vdisk.img");
     FileSys sys(disk);
 
     sys.format();

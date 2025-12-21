@@ -7,9 +7,9 @@
 #include <spdlog/spdlog.h>
 #include <string>
 
-class VDisk {
+class IDisk {
 public:
-    VDisk(uint32_t _disk_size, uint32_t _block_size, std::string _disk_path)
+    IDisk(uint32_t _disk_size, uint32_t _block_size, std::string _disk_path)
         : disk_size_gb(_disk_size), block_size(_block_size), disk_path(_disk_path) {
 
         spdlog::info("[VDisk] 尝试打开虚拟硬盘.");
@@ -22,7 +22,7 @@ public:
                 uint64_t expected_size = get_expected_size_bytes();
 
                 if (current_size != expected_size) {
-                    spdlog::warn("[VDisk] 硬盘大小不匹配. 现有: {} B, 期望: {} B ({} GB).",
+                    spdlog::warn("[VDisk] 虚拟硬盘大小不匹配. 现有: {} B, 期望: {} B ({} GB).",
                                  current_size, expected_size, disk_size_gb);
 
                     file.close();
@@ -43,7 +43,7 @@ public:
         }
     }
 
-    ~VDisk() {
+    ~IDisk() {
         spdlog::info("[VDisk] VDisk层退出.");
         flush();
         if (file.is_open()) {
@@ -76,7 +76,7 @@ public:
     void write_block(uint64_t lba, const char *data) {
         spdlog::debug("[VDisk] 向虚拟硬盘写入盘块. LBA: 0x{:X}.", lba);
         if (lba >= get_expected_size_bytes() / block_size) {
-            throw std::out_of_range("LBA 超出硬盘范围");
+            throw std::out_of_range("LBA 超出虚拟硬盘范围");
         }
 
         uint64_t offset = lba * block_size;
@@ -91,7 +91,7 @@ public:
     void read_block(uint64_t lba, char *buffer) {
         spdlog::debug("[VDisk] 从虚拟硬盘读取盘块. LBA: 0x{:X}.", lba);
         if (lba >= get_expected_size_bytes() / block_size) {
-            throw std::out_of_range("LBA 超出硬盘范围");
+            throw std::out_of_range("LBA 超出虚拟硬盘范围");
         }
 
         uint64_t offset = lba * block_size;
@@ -104,7 +104,7 @@ public:
                 std::memset(buffer + file.gcount(), 0, block_size - file.gcount());
                 file.clear();
             } else {
-                spdlog::error("[VDisk] 读取硬盘失败 LBA: 0x{:X}.", lba);
+                spdlog::error("[VDisk] 读取虚拟硬盘失败 LBA: 0x{:X}.", lba);
             }
         }
     }
