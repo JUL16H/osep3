@@ -46,6 +46,8 @@ public:
 
         block_manager->set_super_block(super_block);
         inode_manager->set_super_block(super_block);
+        bitmap_manager->set_super_block(super_block);
+        data_btree->set_super_block(super_block);
 
         spdlog::info("[FileSys] 读取Super Block.");
         block_manager->read_super_block();
@@ -110,7 +112,6 @@ public:
     }
 
 private:
-
     // TODO: path_inode_id -> path_str
     void create_dir(uint32_t path_inode_id, std::string name) {
         spdlog::info("[FileSys] 创建文件夹.");
@@ -205,4 +206,5 @@ private:
     BlockManager *block_manager = BlockManager::get_instance();
     BitmapManager *bitmap_manager = BitmapManager::get_instance();
     INodeManager *inode_manager = INodeManager::get_instance();
+    DataBTree *data_btree = DataBTree::get_instance();
 };

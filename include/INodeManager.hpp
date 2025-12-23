@@ -62,139 +62,142 @@ public:
         return true;
     }
 
-    // FIX:::::::!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    // HACK:
     bool inode_add_data(uint64_t inode_id, std::span<uint8_t> data) {
         spdlog::info("[INodeManager] 向文件写入数据.");
-        spdlog::debug("[INodeManager] INode ID: {:X}.", inode_id);
+        spdlog::debug("[INodeManager] INode ID: {:X}, 写入数据大小: {} B.", inode_id, data.size());
 
-        spdlog::debug("[INodeManager] 从硬盘中读取INode.");
-        uint32_t dir_inode_block_lba =
-            inode_id / super_block->data.inodes_per_block + super_block->data.inode_block_start_lba;
+        uint64_t dir_inode_block_lba =
+            super_block->data.inode_block_start_lba + inode_id / super_block->data.inodes_per_block;
+
+        uint64_t inode_offset =
+            (inode_id % super_block->data.inodes_per_block) * super_block->data.inode_size;
 
         std::vector<uint8_t> buffer(super_block->data.block_size);
         block_manager->read_block(dir_inode_block_lba, buffer);
 
         INode inode;
-        std::memcpy(&inode,
-                    buffer.data() + (inode_id % super_block->data.inodes_per_block) *
-                                        super_block->data.inode_size,
-                    sizeof(INode));
+        std::memcpy(&inode, buffer.data() + inode_offset, sizeof(INode));
 
-        switch (inode.storage_type) {
-        case StorageType::Inline:
+        if (inode.storage_type == StorageType::Inline) {
             if (inode.size + data.size() <= super_block->data.inode_data_size) {
                 std::memcpy(inode.inline_data + inode.size, data.data(), data.size());
                 inode.size += data.size();
-                break;
-            } else if (inode.size + data.size() <= super_block->data.block_size) {
-                uint64_t block_lba;
-                if (!bitmap_manager->allocate_block(block_lba))
-                    return false;
-
-                inode.storage_type = StorageType::Direct;
-                inode.block_lba = block_lba;
-
-                std::vector<uint8_t> data_buffer(super_block->data.block_size);
-                std::memcpy(data_buffer.data(), inode.inline_data, inode.size);
-                std::memset(inode.inline_data, 0, inode.size);
-                std::memcpy(data_buffer.data() + inode.size, data.data(), data.size());
-
-                block_manager->write_block(block_lba, data_buffer);
-                inode.size += data.size();
-                break;
-            } else {
-                uint64_t block_lba;
-                if (!bitmap_manager->allocate_block(block_lba))
-                    return false;
-
-                inode.storage_type = StorageType::Direct;
-                inode.block_lba = block_lba;
-
-                std::vector<uint8_t> data_buffer(super_block->data.block_size);
-                std::memcpy(data_buffer.data(), inode.inline_data, inode.size);
-                std::memset(inode.inline_data, 0, inode.size);
-                std::memcpy(data_buffer.data() + inode.size, data.data(),
-                            super_block->data.block_size - inode.size);
-
-                block_manager->write_block(block_lba, data_buffer);
-                data = std::span(data.data() + super_block->data.block_size - inode.size,
-                                 data.data() + data.size());
-                inode.size = super_block->data.block_size;
+                data = data.subspan(data.size()); // 数据已全部写入
             }
+            else {
+                spdlog::debug("[INodeManager] Inline 空间不足，升级为 Direct.");
+                uint64_t block_lba;
+                if (!bitmap_manager->allocate_block(block_lba)) {
+                    spdlog::error("[INodeManager] 无法分配 Direct 块.");
+                    return false;
+                }
 
-        case StorageType::Direct:
-            if (inode.size + data.size() <= super_block->data.block_size) {
+                inode.storage_type = StorageType::Direct;
+                inode.block_lba = block_lba;
+
+                std::vector<uint8_t> data_buffer(super_block->data.block_size, 0);
+                std::memcpy(data_buffer.data(), inode.inline_data, inode.size);
+
+                std::memset(inode.inline_data, 0, INODE_DATA_SIZE);
+
+                uint64_t space_left = super_block->data.block_size - inode.size;
+                uint64_t to_write = std::min((uint64_t)data.size(), space_left);
+
+                std::memcpy(data_buffer.data() + inode.size, data.data(), to_write);
+                block_manager->write_block(block_lba, data_buffer);
+
+                inode.size += to_write;
+                data = data.subspan(to_write);
+            }
+        }
+
+        if (inode.storage_type == StorageType::Direct && !data.empty()) {
+            if (inode.size < super_block->data.block_size) {
                 std::vector<uint8_t> data_buffer(super_block->data.block_size);
                 block_manager->read_block(inode.block_lba, data_buffer);
-                std::memcpy(data_buffer.data() + inode.size, data.data(), data.size());
-                block_manager->write_block(inode.block_lba, data_buffer);
-                inode.size += data.size();
-                break;
-            } else {
-                inode.storage_type = StorageType::BTree;
-                if (inode.size < super_block->data.block_size) {
-                    std::vector<uint8_t> data_buffer(super_block->data.block_size);
-                    block_manager->read_block(inode.block_lba, data_buffer);
-                    std::memcpy(data_buffer.data() + inode.size, data.data(),
-                                super_block->data.block_size - inode.size);
-                    block_manager->write_block(inode.block_lba, data_buffer);
 
-                    data = std::span(data.data() + super_block->data.block_size - inode.size,
-                                     data.data() + data.size());
-                    inode.size += super_block->data.block_size - inode.size;
-                }
-                inode.block_lba = data_btree->insert_block(0, 0, inode.block_lba);
+                uint64_t space_left = super_block->data.block_size - inode.size;
+                uint64_t to_write = std::min((uint64_t)data.size(), space_left);
+
+                std::memcpy(data_buffer.data() + inode.size, data.data(), to_write);
+                block_manager->write_block(inode.block_lba, data_buffer);
+
+                inode.size += to_write;
+                data = data.subspan(to_write);
             }
 
-            // FIX:!!!!!!!!!!!!!!!!!!!
-        case StorageType::BTree:
-            uint64_t last_block_data_size = inode.size % super_block->data.block_size;
-            if (last_block_data_size) {
-                uint64_t last_data_block = data_btree->find_block(
-                    inode.block_lba, inode.size / super_block->data.block_size);
-                if (last_data_block == 0) {
+            if (!data.empty()) {
+                spdlog::debug("[INodeManager] Direct 空间不足，升级为 BTree.");
+                inode.storage_type = StorageType::BTree;
+
+                uint64_t new_root_lba = data_btree->insert_block(0, 0, inode.block_lba);
+                if (new_root_lba == 0) {
+                    spdlog::error("[INodeManager] BTree 根节点创建失败.");
                     return false;
                 }
-                std::vector<uint8_t> data_buffer(super_block->data.block_size);
-                block_manager->read_block(last_data_block, data_buffer);
-                uint64_t data_size =
-                    std::min(data.size(), super_block->data.block_size - last_block_data_size);
-                std::memcpy(data_buffer.data() + last_block_data_size, data.data(), data_size);
-                block_manager->write_block(last_data_block, data_buffer);
+                inode.block_lba = new_root_lba;
+            }
+        }
 
-                data = std::span(data.data() + super_block->data.block_size - last_block_data_size,
-                                 data.data() + data.size());
-                inode.size += data_size;
+        if (inode.storage_type == StorageType::BTree && !data.empty()) {
+            uint64_t last_block_offset = inode.size % super_block->data.block_size;
+            if (last_block_offset != 0) {
+                uint64_t block_idx = inode.size / super_block->data.block_size;
+                uint64_t last_data_lba = data_btree->find_block(inode.block_lba, block_idx);
+
+                if (last_data_lba == 0) {
+                    spdlog::error("[INodeManager] 索引错误：无法找到尾部数据块.");
+                    return false;
+                }
+
+                std::vector<uint8_t> data_buffer(super_block->data.block_size);
+                block_manager->read_block(last_data_lba, data_buffer);
+
+                uint64_t space_left = super_block->data.block_size - last_block_offset;
+                uint64_t to_write = std::min((uint64_t)data.size(), space_left);
+
+                std::memcpy(data_buffer.data() + last_block_offset, data.data(), to_write);
+                block_manager->write_block(last_data_lba, data_buffer);
+
+                inode.size += to_write;
+                data = data.subspan(to_write);
             }
 
             std::vector<uint8_t> data_buffer(super_block->data.block_size);
-            while (data.size() > 0) {
+            while (!data.empty()) {
                 uint64_t new_data_lba;
-                if (!bitmap_manager->allocate_block(new_data_lba))
+                if (!bitmap_manager->allocate_block(new_data_lba)) {
+                    spdlog::error("[INodeManager] 磁盘已满，无法分配新块.");
                     return false;
+                }
 
-                uint64_t epoch_add_data_size =
-                    std::min(data.size(), (size_t)super_block->data.block_size);
+                uint64_t to_write =
+                    std::min((uint64_t)data.size(), (uint64_t)super_block->data.block_size);
 
-                std::ranges::fill(data_buffer, 0);
-                std::memcpy(data_buffer.data(), data.data(), epoch_add_data_size);
+                std::memset(data_buffer.data(), 0, super_block->data.block_size);
+                std::memcpy(data_buffer.data(), data.data(), to_write);
                 block_manager->write_block(new_data_lba, data_buffer);
 
-                inode.block_lba = data_btree->insert_block(
-                    inode.block_lba, inode.size / super_block->data.block_size, new_data_lba);
+                uint64_t block_idx = inode.size / super_block->data.block_size;
+                uint64_t new_root =
+                    data_btree->insert_block(inode.block_lba, block_idx, new_data_lba);
 
-                data = std::span(data.data() + epoch_add_data_size, data.data() + data.size());
-                inode.size += epoch_add_data_size;
+                if (new_root == 0) {
+                    spdlog::error("[INodeManager] BTree 插入节点失败.");
+                    return false;
+                }
+
+                inode.block_lba = new_root;
+                inode.size += to_write;
+                data = data.subspan(to_write);
             }
-            break;
         }
 
-        spdlog::debug("[INodeManager] INode写回硬盘.");
-        std::memcpy(buffer.data() + (inode_id % super_block->data.inodes_per_block) *
-                                        super_block->data.inode_size,
-                    &inode, sizeof(INode));
+        std::memcpy(buffer.data() + inode_offset, &inode, sizeof(INode));
         block_manager->write_block(dir_inode_block_lba, buffer);
 
+        spdlog::debug("[INodeManager] 数据写入完成，新文件大小: {} B.", inode.size);
         return true;
     }
 

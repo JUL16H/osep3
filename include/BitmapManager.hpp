@@ -9,8 +9,6 @@ class BitmapManager : public Singleton<BitmapManager> {
 public:
     void set_super_block(std::shared_ptr<SuperBlock> sb) { super_block = sb; }
 
-    void set_block_manager(std::shared_ptr<BlockManager> bm) { block_manager = bm; }
-
     void reset_bitmap() {
         spdlog::debug("[Bitmap Manager] 写入位图.");
         std::vector<uint8_t> buffer(super_block->data.block_size);
@@ -92,5 +90,5 @@ public:
 
 private:
     std::shared_ptr<SuperBlock> super_block;
-    std::shared_ptr<BlockManager> block_manager;
+    BlockManager *block_manager = BlockManager::get_instance();
 };
