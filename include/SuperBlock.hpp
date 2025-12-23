@@ -34,6 +34,8 @@ union SuperBlock {
 
         uint64_t root_inode;
         uint64_t free_blocks;
+
+        uint64_t BTree_M;
     } data;
     char padding[BLOCK_SIZE];
 
@@ -81,6 +83,8 @@ inline const SuperBlock create_superblock(uint32_t disk_size_gb) {
 
     rst.data.root_inode = 0;
     rst.data.free_blocks = rst.data.total_blocks - rst.data.basic_blocks_cnt;
+
+    rst.data.BTree_M = BTree_M;
 
     return rst;
 }

@@ -1,4 +1,5 @@
 #pragma once
+#include "IDisk.hpp"
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -7,10 +8,10 @@
 #include <spdlog/spdlog.h>
 #include <string>
 
-class IDisk {
+class VDisk : public IDisk {
 public:
-    IDisk(uint32_t _disk_size, uint32_t _block_size, std::string _disk_path)
-        : disk_size_gb(_disk_size), block_size(_block_size), disk_path(_disk_path) {
+    VDisk(uint32_t _disk_size, uint32_t _block_size, std::string _disk_path)
+        : IDisk(_disk_size, _block_size), disk_path(_disk_path) {
 
         spdlog::info("[VDisk] 尝试打开虚拟硬盘.");
         file.open(disk_path, std::ios::in | std::ios::out | std::ios::binary);
@@ -43,7 +44,7 @@ public:
         }
     }
 
-    ~IDisk() {
+    ~VDisk() {
         spdlog::info("[VDisk] VDisk层退出.");
         flush();
         if (file.is_open()) {
@@ -52,7 +53,7 @@ public:
         }
     }
 
-    void clear() {
+    void clear() override {
         spdlog::info("[VDisk] 清空虚拟硬盘.");
 
         if (file.is_open()) {
@@ -73,22 +74,7 @@ public:
         open_stream();
     }
 
-    void write_block(uint64_t lba, const char *data) {
-        spdlog::debug("[VDisk] 向虚拟硬盘写入盘块. LBA: 0x{:X}.", lba);
-        if (lba >= get_expected_size_bytes() / block_size) {
-            throw std::out_of_range("LBA 超出虚拟硬盘范围");
-        }
-
-        uint64_t offset = lba * block_size;
-
-        file.clear();
-        file.seekp(offset, std::ios::beg);
-        file.write(data, block_size);
-    }
-
-    void flush() { file.flush(); }
-
-    void read_block(uint64_t lba, char *buffer) {
+    void read_block(uint64_t lba, char *buffer) override {
         spdlog::debug("[VDisk] 从虚拟硬盘读取盘块. LBA: 0x{:X}.", lba);
         if (lba >= get_expected_size_bytes() / block_size) {
             throw std::out_of_range("LBA 超出虚拟硬盘范围");
@@ -109,9 +95,20 @@ public:
         }
     }
 
-    void set_block_size(uint32_t _block_size) { block_size = _block_size; }
+    void write_block(uint64_t lba, const char *data) override {
+        spdlog::debug("[VDisk] 向虚拟硬盘写入盘块. LBA: 0x{:X}.", lba);
+        if (lba >= get_expected_size_bytes() / block_size) {
+            throw std::out_of_range("LBA 超出虚拟硬盘范围");
+        }
 
-    uint32_t get_disk_size() { return disk_size_gb; }
+        uint64_t offset = lba * block_size;
+
+        file.clear();
+        file.seekp(offset, std::ios::beg);
+        file.write(data, block_size);
+    }
+
+    void flush() override { file.flush(); }
 
 private:
     void open_stream() {
@@ -122,11 +119,7 @@ private:
         }
     }
 
-    uint64_t get_expected_size_bytes() const { return (uint64_t)disk_size_gb * (1ULL << 30); }
-
 private:
     std::fstream file;
-    uint32_t disk_size_gb;
     std::string disk_path;
-    uint32_t block_size;
 };

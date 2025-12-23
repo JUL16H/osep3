@@ -14,3 +14,5 @@ constexpr uint32_t FILENAME_SIZE = 54;
 
 constexpr uint32_t INODE_SIZE = 512;
 constexpr uint32_t INODE_DATA_SIZE = INODE_SIZE - 38;
+
+constexpr uint32_t BTree_M = (BLOCK_SIZE - 16) >> 4;
