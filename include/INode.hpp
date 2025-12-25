@@ -2,6 +2,7 @@
 #include "macros.hpp"
 #include <cstdint>
 #include <cstring>
+#include <vector>
 
 enum class FileType : uint8_t {
     File = 0,
@@ -11,7 +12,7 @@ enum class FileType : uint8_t {
 enum class StorageType : uint8_t {
     Inline = 0,
     Direct = 1,
-    BTree = 2,
+    Index = 2,
 };
 
 struct INode {

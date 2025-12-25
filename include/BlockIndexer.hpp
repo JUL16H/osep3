@@ -1,7 +1,6 @@
 #pragma once
-#include "BitmapManager.hpp"
-#include "BlockManager.hpp"
-#include "Singleton.hpp"
+#include "BlockAllocator.hpp"
+#include "IOContext.hpp"
 #include "macros.hpp"
 #include <cstring>
 #include <memory>
@@ -19,33 +18,56 @@ struct BTreeNode {
 };
 static_assert(sizeof(BTreeNode) == BLOCK_SIZE);
 
-class DataBTree : public Singleton<DataBTree> {
-    friend class Singleton;
-
+class BlockIndexer {
 public:
-    void set_super_block(std::shared_ptr<SuperBlock> sb) { super_block = sb; }
-    uint64_t find_block(uint64_t root_lba, uint64_t file_block_idx) {
-        spdlog::debug("[DataBTree] 查找数据盘块");
-        BTreeNode *node;
+    BlockIndexer(std::shared_ptr<SuperBlock> _sb, std::shared_ptr<IOContext> _ioc,
+                 std::shared_ptr<BlockAllocator> _blkalloc)
+        : sb(_sb), iocontext(_ioc), blkalloc(_blkalloc) {}
+
+    std::vector<uint64_t> find_blocks(uint64_t root_lba, uint64_t from, uint64_t to) {
+        spdlog::debug("[DataBTree] 查找数据盘块, Idx Range: {} -> {}.", from, to);
+        std::vector<uint64_t> rst(to - from + 1, 0);
+        if (!root_lba)
+            return rst;
+
+        std::vector<uint8_t> buffer(sb->data.block_size);
         uint64_t cur_lba = root_lba;
-        std::vector<uint8_t> buffer(super_block->data.block_size);
+        BTreeNode *node = nullptr;
+
         while (true) {
-            if (cur_lba == 0)
-                return 0;
-            block_manager->read_block(cur_lba, buffer);
+            iocontext->read_block(cur_lba, buffer);
             node = reinterpret_cast<BTreeNode *>(buffer.data());
+
             if (node->is_leaf) {
-                for (uint64_t i = 0; i < node->key_cnt; i++) {
-                    if (node->keys[i] == file_block_idx)
-                        return node->ptrs[i];
-                }
-                return 0;
+                break;
             }
-            uint64_t idx =
-                std::distance(node->keys, std::upper_bound(node->keys, node->keys + node->key_cnt,
-                                                           file_block_idx));
+
+            uint64_t idx = std::distance(
+                node->keys, std::upper_bound(node->keys, node->keys + node->key_cnt, from));
             cur_lba = node->ptrs[idx];
         }
+
+        if (!node)
+            return rst;
+
+        for (uint64_t cur = from; cur <= to; cur++) {
+            while (node->key_cnt && cur > node->keys[node->key_cnt - 1] && node->nxt) {
+                cur_lba = node->nxt;
+                iocontext->read_block(cur_lba, buffer);
+                node = reinterpret_cast<BTreeNode *>(buffer.data());
+            }
+            auto it = std::lower_bound(node->keys, node->keys + node->key_cnt, cur);
+            uint64_t idx = std::distance(node->keys, it);
+            if (idx < node->key_cnt && node->keys[idx] == cur) {
+                rst[cur - from] = node->ptrs[idx];
+            }
+        }
+
+        return rst;
+    }
+
+    uint64_t find_block(uint64_t root_lba, uint64_t file_block_idx) {
+        return find_blocks(root_lba, file_block_idx, file_block_idx)[0];
     }
 
     // TODO::
@@ -55,9 +77,7 @@ public:
             root_lba, file_block_idx, file_data_lba);
         if (root_lba == 0) {
             uint64_t new_root_lba;
-            // >>>>>>>>>>>>>>>>>>>>
-            spdlog::critical("???????????????????????????");
-            if (!bitmap_manager->allocate_block(new_root_lba)) {
+            if (!blkalloc->allocate_block(new_root_lba)) {
                 return 0;
             }
             auto node = std::make_unique<BTreeNode>(true);
@@ -68,13 +88,13 @@ public:
             return new_root_lba;
         }
 
-        std::vector<uint8_t> buffer(super_block->data.block_size);
-        block_manager->read_block(root_lba, buffer);
+        std::vector<uint8_t> buffer(sb->data.block_size);
+        iocontext->read_block(root_lba, buffer);
         BTreeNode *root_node = reinterpret_cast<BTreeNode *>(buffer.data());
 
-        if (root_node->key_cnt == super_block->data.BTree_M - 1) {
+        if (root_node->key_cnt == sb->data.BTree_M - 1) {
             uint64_t new_root_lba;
-            if (!bitmap_manager->allocate_block(new_root_lba)) {
+            if (!blkalloc->allocate_block(new_root_lba)) {
                 return 0;
             }
 
@@ -94,38 +114,39 @@ public:
 
 private:
     void write_node(uint64_t lba, BTreeNode *node) {
-        block_manager->write_block(lba, std::span<uint8_t>(reinterpret_cast<uint8_t *>(node),
-                                                           super_block->data.block_size));
+        iocontext->write_block(
+            lba, std::span<uint8_t>(reinterpret_cast<uint8_t *>(node), sb->data.block_size));
     }
 
     bool split_child(uint64_t father_node_lba, uint64_t child_idx) {
         uint64_t new_node_lba;
-        if (!bitmap_manager->allocate_block(new_node_lba)) {
+        if (!blkalloc->allocate_block(new_node_lba)) {
             return false;
         }
 
-        std::vector<uint8_t> father_node_buffer(super_block->data.block_size);
-        block_manager->read_block(father_node_lba, father_node_buffer);
+        std::vector<uint8_t> father_node_buffer(sb->data.block_size);
+        iocontext->read_block(father_node_lba, father_node_buffer);
         BTreeNode *father_node = reinterpret_cast<BTreeNode *>(father_node_buffer.data());
 
-        std::vector<uint8_t> child_node_buffer(super_block->data.block_size);
+        std::vector<uint8_t> child_node_buffer(sb->data.block_size);
         uint64_t child_lba = father_node->ptrs[child_idx];
-        block_manager->read_block(child_lba, child_node_buffer);
+        iocontext->read_block(child_lba, child_node_buffer);
         BTreeNode *child_node = reinterpret_cast<BTreeNode *>(child_node_buffer.data());
 
         auto new_node = std::make_unique<BTreeNode>(child_node->is_leaf);
-        uint64_t mid = (super_block->data.BTree_M - 1) >> 1;
+        uint64_t mid = (sb->data.BTree_M - 1) >> 1;
 
         if (child_node->is_leaf) {
-            new_node->key_cnt = super_block->data.BTree_M - 1 - mid;
+            new_node->key_cnt = sb->data.BTree_M - 1 - mid;
             std::memcpy(new_node->keys, child_node->keys + mid,
                         new_node->key_cnt * sizeof(uint64_t));
             std::memcpy(new_node->ptrs, child_node->ptrs + mid,
                         new_node->key_cnt * sizeof(uint64_t));
 
             child_node->nxt = new_node_lba;
+            new_node->nxt = child_node->nxt;
         } else {
-            new_node->key_cnt = super_block->data.BTree_M - 1 - mid - 1;
+            new_node->key_cnt = sb->data.BTree_M - 1 - mid - 1;
             std::memcpy(new_node->keys, child_node->keys + mid + 1,
                         new_node->key_cnt * sizeof(uint64_t));
             std::memcpy(new_node->ptrs, child_node->ptrs + mid + 1,
@@ -153,8 +174,8 @@ private:
     }
 
     bool node_insert(uint64_t node_lba, uint64_t key, uint64_t data_lba) {
-        std::vector<uint8_t> buffer(super_block->data.block_size);
-        block_manager->read_block(node_lba, buffer);
+        std::vector<uint8_t> buffer(sb->data.block_size);
+        iocontext->read_block(node_lba, buffer);
         BTreeNode *node = reinterpret_cast<BTreeNode *>(buffer.data());
 
         if (node->is_leaf) {
@@ -174,13 +195,13 @@ private:
         uint64_t idx = std::upper_bound(node->keys, node->keys + node->key_cnt, key) - node->keys;
         uint64_t child_lba = node->ptrs[idx];
         std::vector<uint8_t> child_buffer(BLOCK_SIZE);
-        block_manager->read_block(child_lba, child_buffer);
+        iocontext->read_block(child_lba, child_buffer);
         BTreeNode *child_node = reinterpret_cast<BTreeNode *>(child_buffer.data());
 
-        if (child_node->key_cnt == super_block->data.BTree_M - 1) {
+        if (child_node->key_cnt == sb->data.BTree_M - 1) {
             if (!split_child(node_lba, idx))
                 return false;
-            block_manager->read_block(node_lba, buffer);
+            iocontext->read_block(node_lba, buffer);
             node = reinterpret_cast<BTreeNode *>(buffer.data());
             if (key > node->keys[idx])
                 idx++;
@@ -193,7 +214,7 @@ private:
     }
 
 private:
-    std::shared_ptr<SuperBlock> super_block;
-    BlockManager *block_manager = BlockManager::get_instance();
-    BitmapManager *bitmap_manager = BitmapManager::get_instance();
+    std::shared_ptr<SuperBlock> sb;
+    std::shared_ptr<IOContext> iocontext;
+    std::shared_ptr<BlockAllocator> blkalloc;
 };

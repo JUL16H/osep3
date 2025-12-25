@@ -18,7 +18,7 @@ int main() {
     IDisk *disk = new VDisk(4096, BLOCK_SIZE, "vdisk.img");
     FileSys sys(disk);
     sys.format();
-    for (int i = 0; i < 10240; i++)
+    for (int i = 0; i < 1024; i++)
         sys.create_dir(0, "FileSys" + std::to_string(i));
     sys.list_directory(0);
 

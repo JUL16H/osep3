@@ -1,16 +1,15 @@
 #pragma once
-#include "Singleton.hpp"
-#include "SuperBlock.hpp"
 #include "VDisk.hpp"
-#include "macros.hpp"
+#include "SuperBlock.hpp"
 #include <memory>
 
-class BlockManager : public Singleton<BlockManager> {
-    friend class Singleton;
+// TODO: 添加缓存机制，尽可能从内存读取,减少IO次数
 
+class IOContext {
 public:
-    void set_super_block(std::shared_ptr<SuperBlock> sb) { super_block = sb; }
-    void set_disk(std::shared_ptr<IDisk> _disk) { disk = _disk; }
+    IOContext(std::shared_ptr<SuperBlock> _sb, std::shared_ptr<IDisk> _disk)
+        : super_block(_sb), disk(_disk) {}
+
     void refresh_super_block() {
         spdlog::debug("[BlockManager] Super Block 信息写入硬盘.");
         disk->write_block(0, reinterpret_cast<char *>(super_block.get()));
