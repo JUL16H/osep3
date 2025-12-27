@@ -2,9 +2,9 @@
 #include "FileSys.hpp"
 #include <filesystem>
 #include <format>
+#include <iostream>
 #include <sstream>
 #include <vector>
-#include <iostream>
 
 inline std::string path_join(std::string path1, std::string path2) {
     std::filesystem::path p1(path1);
@@ -34,7 +34,6 @@ public:
         while (true) {
             std::cout << std::format("{} >", cur_path);
             std::getline(std::cin, line);
-            // std::cout << "\n"; // Optional: extra newline
 
             std::stringstream ss(line);
             std::string word;
@@ -47,7 +46,6 @@ public:
             auto cmd = args[0];
 
             std::string original_cmd = cmd;
-            // args[0] is typically used as the base path (cur_path) for path_join in logic below
             args[0] = cur_path;
 
             if (original_cmd == "help") {
@@ -66,28 +64,22 @@ public:
             } else if (original_cmd == "mkdir") {
                 switch (args.size()) {
                 case 2:
-                    // path name
                     filesys->create_dir(args[0], args[1]);
                     break;
                 case 3:
-                    // cur_path, path, name
                     filesys->create_dir(path_join(args[0], args[1]), args[2]);
                     break;
                 }
             } else if (original_cmd == "touch") {
                 switch (args.size()) {
                 case 2:
-                    // path name
                     filesys->create_file(args[0], args[1]);
                     break;
                 case 3:
-                    // cur_path, path, name
                     filesys->create_file(path_join(args[0], args[1]), args[2]);
                     break;
                 }
             } else if (original_cmd == "rm") {
-                // 新增: 删除文件
-                // Usage: rm <filename>
                 if (args.size() != 2) {
                     std::cout << "Usage: rm <filename>\n";
                     continue;
@@ -99,8 +91,6 @@ public:
                     std::cout << "Failed to remove file: " << args[1] << "\n";
                 }
             } else if (original_cmd == "rmdir") {
-                // 新增: 删除目录
-                // Usage: rmdir <dirname>
                 if (args.size() != 2) {
                     std::cout << "Usage: rmdir <dirname>\n";
                     continue;
@@ -109,7 +99,8 @@ public:
                 if (filesys->remove_dir(path)) {
                     std::cout << "Directory removed: " << args[1] << "\n";
                 } else {
-                    std::cout << "Failed to remove directory: " << args[1] << " (Directory might not be empty)\n";
+                    std::cout << "Failed to remove directory: " << args[1]
+                              << " (Directory might not be empty)\n";
                 }
             } else if (original_cmd == "cd") {
                 switch (args.size()) {
@@ -136,7 +127,6 @@ public:
                     filesys->format();
                 }
             } else if (original_cmd == "open") {
-                // usage: open path [offset]
                 if (args.size() < 2) {
                     std::cout << "Usage: open <filename> [offset]\n";
                     continue;
@@ -149,7 +139,8 @@ public:
                 uint64_t offset = 0;
                 if (args.size() == 3) {
                     auto off_opt = str2unum(args[2]);
-                    if (off_opt) offset = off_opt.value();
+                    if (off_opt)
+                        offset = off_opt.value();
                 }
                 auto fd = filesys->open(path, offset);
                 if (fd)
@@ -158,16 +149,32 @@ public:
                     std::cout << "Failed to open file.\n";
 
             } else if (original_cmd == "close") {
-                // usage: close fd
                 if (args.size() != 2) {
                     std::cout << "Usage: close <fd>\n";
                     continue;
                 }
                 auto fd_opt = str2unum(args[1]);
-                if (fd_opt) filesys->close(fd_opt.value());
+                if (fd_opt)
+                    filesys->close(fd_opt.value());
+
+            } else if (original_cmd == "seek") {
+                if (args.size() != 3) {
+                    std::cout << "Usage: seek <fd> <offset>\n";
+                    continue;
+                }
+                auto fd_opt = str2unum(args[1]);
+                auto off_opt = str2unum(args[2]);
+
+                if (!fd_opt || !off_opt) {
+                    std::cout << "Invalid arguments.\n";
+                    continue;
+                }
+
+                filesys->seek(fd_opt.value(), off_opt.value());
+                std::cout << "Seeked FD " << fd_opt.value() << " to offset " << off_opt.value()
+                          << "\n";
 
             } else if (original_cmd == "write") {
-                // usage: write fd content
                 if (args.size() != 3) {
                     std::cout << "Usage: write <fd> <content_string>\n";
                     continue;
@@ -183,7 +190,6 @@ public:
                 std::cout << "Written " << args[2].size() << " bytes.\n";
 
             } else if (original_cmd == "read") {
-                // usage: read fd size
                 if (args.size() != 3) {
                     std::cout << "Usage: read <fd> <size>\n";
                     continue;
@@ -230,14 +236,19 @@ public:
                 std::vector<uint8_t> buffer(buf_size);
                 while (true) {
                     size_t n = filesys->read(fd, buffer);
-                    if (n == 0) break;
-                    std::cout.write(reinterpret_cast<char*>(buffer.data()), n);
+                    if (n == 0)
+                        break;
+                    for (size_t i = 0; i < n; ++i) {
+                        if (buffer[i] == 0) {
+                            buffer[i] = '.';
+                        }
+                    }
+                    std::cout.write(reinterpret_cast<char *>(buffer.data()), n);
                 }
                 std::cout << "\n";
                 filesys->close(fd);
 
             } else if (original_cmd == "mkdirn") {
-                // Usage: mkdirn <name_prefix> <count>
                 if (args.size() != 3) {
                     std::cout << "Usage: mkdirn <name_prefix> <count>\n";
                     continue;
@@ -253,7 +264,6 @@ public:
                 int success_count = 0;
 
                 for (uint64_t i = 0; i < n; ++i) {
-                    // 构造名称 name0, name1 ...
                     std::string name = prefix + std::to_string(i);
                     if (filesys->create_dir(args[0], name)) {
                         success_count++;
@@ -264,7 +274,6 @@ public:
                 std::cout << "Batch created " << success_count << " directories.\n";
 
             } else if (original_cmd == "touchn") {
-                // Usage: touchn <name_prefix> <count>
                 if (args.size() != 3) {
                     std::cout << "Usage: touchn <name_prefix> <count>\n";
                     continue;
@@ -280,7 +289,6 @@ public:
                 int success_count = 0;
 
                 for (uint64_t i = 0; i < n; ++i) {
-                    // 构造名称 name0, name1 ...
                     std::string name = prefix + std::to_string(i);
                     if (filesys->create_file(args[0], name)) {
                         success_count++;
@@ -310,6 +318,7 @@ private:
         std::cout << "  close <fd>              Close file\n";
         std::cout << "  read <fd> <size>        Read from file descriptor\n";
         std::cout << "  write <fd> <content>    Write to file descriptor\n";
+        std::cout << "  seek <fd> <offset>      Seek to offset in file\n";
         std::cout << "  format                  Format file system\n";
         std::cout << "  mkdirn <prefix> <n>     Batch create directories\n";
         std::cout << "  touchn <prefix> <n>     Batch create files\n";

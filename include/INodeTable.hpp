@@ -87,7 +87,7 @@ public:
     void free_inode(uint64_t id) {
         INode *node = &get(id)->node;
 
-        uint64_t lba = id / sb->data.bits_per_block + sb->data.inode_block_start_lba;
+        uint64_t lba = id / sb->data.bits_per_block + sb->data.inode_valid_block_start_lba;
         uint64_t byte_idx = (id % sb->data.bits_per_block) / 8;
         uint64_t bit_idx = id % 8;
 
@@ -219,58 +219,39 @@ public:
             node->storage_type = StorageType::Index;
         }
         if (node->storage_type == StorageType::Index) {
-            // 已有盘块写入
-            uint64_t begin_idx = offset / sb->data.block_size;
-            uint64_t end_idx =
-                (std::min(offset + data.size(), node->size) - 1) / sb->data.block_size;
+            auto cur_pos = offset;
+            const auto end_pos = offset + data.size();
+            while (!data.empty()) {
+                uint64_t cur_blk_idx = cur_pos / sb->data.block_size;
+                uint64_t in_blk_offset = cur_pos % sb->data.block_size;
+                uint64_t batch_size =
+                    std::min(data.size(), (size_t)sb->data.block_size - in_blk_offset);
 
-            std::vector<uint64_t> data_block_lbas =
-                blkidxer->find_blocks(node->block_lba, begin_idx, end_idx);
-            offset %= sb->data.block_size;
-            for (uint64_t i = 0; i < data_block_lbas.size(); i++) {
-                std::vector<uint8_t> data_block_buffer(sb->data.block_size);
-                uint64_t cur_epoch_size = std::min(sb->data.block_size - offset, data.size());
-                if (data_block_lbas[i]) {
-                    iocontext->read_block(data_block_lbas[i], data_block_buffer);
-                    std::memcpy(data_block_buffer.data() + offset, data.data(), cur_epoch_size);
-                    iocontext->write_block(data_block_lbas[i], data_block_buffer);
-                } else {
-                    auto new_block_lba = blkalloc->allocate_block();
-                    if (!new_block_lba)
+                uint64_t blk_lba = blkidxer->find_block(node->block_lba, cur_blk_idx);
+                std::vector<uint8_t> blk_buffer(sb->data.block_size);
+
+                if (blk_lba == 0) {
+                    auto new_blk_lba = blkalloc->allocate_block();
+                    if (!new_blk_lba)
                         return false;
-                    std::memcpy(data_block_buffer.data(), data.data(), cur_epoch_size);
-                    iocontext->write_block(new_block_lba.value(), data_block_buffer);
-                    auto optlba = blkidxer->insert_block(node->block_lba, i + begin_idx,
-                                                         new_block_lba.value());
+                    auto optlba =
+                        blkidxer->insert_block(node->block_lba, cur_blk_idx, new_blk_lba.value());
                     if (!optlba)
                         return false;
                     node->block_lba = optlba.value();
+                    blk_lba = new_blk_lba.value();
+                } else {
+                    iocontext->read_block(blk_lba, blk_buffer);
                 }
-                node->size = std::max(node->size, (begin_idx + i) * sb->data.block_size + offset +
-                                                      cur_epoch_size);
-                data = data.subspan(cur_epoch_size);
-                offset = 0;
+
+                std::memcpy(blk_buffer.data() + in_blk_offset, data.data(), batch_size);
+                iocontext->write_block(blk_lba, blk_buffer);
+
+                data = data.subspan(batch_size);
+                cur_pos += batch_size;
             }
-            // 新盘块插入
-            while (!data.empty()) {
-                std::vector<uint8_t> data_block_buffer(sb->data.block_size);
-                uint64_t cur_epoch_size = std::min(sb->data.block_size - offset, data.size());
-                auto new_block_lba = blkalloc->allocate_block();
-                if (!new_block_lba)
-                    return false;
-                std::memcpy(data_block_buffer.data(), data.data(), cur_epoch_size);
-                iocontext->write_block(new_block_lba.value(), data_block_buffer);
-                auto optlba =
-                    blkidxer->insert_block(node->block_lba, ++end_idx, new_block_lba.value());
-                if (!optlba)
-                    return false;
-                node->block_lba = optlba.value();
-                data = data.subspan(cur_epoch_size);
-                node->size += cur_epoch_size;
-                offset = 0;
-            }
+            node->size = std::max(end_pos, node->size);
         }
-        write_inode_to_disk(id, node);
         return true;
     }
 
@@ -364,7 +345,7 @@ public:
             buffer.resize(size);
             for (uint64_t i = 0; i < buffer.size(); i += sb->data.diritem_size) {
                 auto *item = reinterpret_cast<DirItem *>(buffer.data() + i);
-                if (std::string(item->name) == name)
+                if (item->valid && std::string(item->name) == name)
                     return item->inode_id;
             }
         }
