@@ -6,8 +6,6 @@ constexpr uint32_t BLOCK_SIZE = 16 * 1024;
 constexpr uint64_t MAGIC_NUMBER = 0xEA6191;
 constexpr uint64_t VERSION = 7;
 
-constexpr uint32_t INODE_BLOCKS_COUNT = (4ULL << 20);
-
 constexpr uint16_t DIRITEM_SIZE = 64;
 
 constexpr uint32_t FILENAME_SIZE = 54;

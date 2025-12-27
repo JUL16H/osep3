@@ -8,9 +8,9 @@
 #include <spdlog/spdlog.h>
 #include <string>
 
-class VDisk : public IDisk {
+class FileDisk : public IDisk {
 public:
-    VDisk(uint32_t _disk_size, uint32_t _block_size, std::string _disk_path)
+    FileDisk(uint32_t _disk_size, uint32_t _block_size, std::string _disk_path)
         : IDisk(_disk_size, _block_size), disk_path(_disk_path) {
 
         spdlog::info("[VDisk] 尝试打开虚拟硬盘.");
@@ -44,7 +44,7 @@ public:
         }
     }
 
-    ~VDisk() {
+    ~FileDisk() {
         spdlog::info("[VDisk] VDisk层退出.");
         flush();
         if (file.is_open()) {
@@ -60,22 +60,22 @@ public:
             file.close();
         }
 
-        // try {
-        std::filesystem::resize_file(disk_path, 0);
-        std::filesystem::resize_file(disk_path, get_expected_size_bytes());
-        // } catch (const std::filesystem::filesystem_error &e) {
-        //     try {
-        //         open_stream();
-        //     } catch (...) {
-        //     }
-        //     throw std::runtime_error(std::string("硬盘清空失败: ") + e.what());
-        // }
+        try {
+            std::filesystem::resize_file(disk_path, 0);
+            std::filesystem::resize_file(disk_path, get_expected_size_bytes());
+        } catch (const std::filesystem::filesystem_error &e) {
+            try {
+                open_stream();
+            } catch (...) {
+            }
+            throw std::runtime_error(std::string("硬盘清空失败: ") + e.what());
+        }
 
         open_stream();
     }
 
     void read_block(uint64_t lba, char *buffer) override {
-        spdlog::debug("[VDisk] 从虚拟硬盘读取盘块. LBA: 0x{:X}.", lba);
+        spdlog::trace("[VDisk] 从虚拟硬盘读取盘块. LBA: 0x{:X}.", lba);
         if (lba >= get_expected_size_bytes() / block_size) {
             throw std::out_of_range("LBA 超出虚拟硬盘范围");
         }
@@ -96,7 +96,7 @@ public:
     }
 
     void write_block(uint64_t lba, const char *data) override {
-        spdlog::debug("[VDisk] 向虚拟硬盘写入盘块. LBA: 0x{:X}.", lba);
+        spdlog::trace("[VDisk] 向虚拟硬盘写入盘块. LBA: 0x{:X}.", lba);
         if (lba >= get_expected_size_bytes() / block_size) {
             throw std::out_of_range("LBA 超出虚拟硬盘范围");
         }

@@ -5,20 +5,17 @@
 #include "INodeTable.hpp"
 #include "IOContext.hpp"
 #include "SuperBlock.hpp"
-#include "macros.hpp"
-#include <algorithm>
 #include <cstdint>
-#include <cstring>
 #include <format>
 #include <iostream>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 #include <string>
 
-// TODO:
-// 参数设定合理性检查
-// uintN_t 溢出冗余检查
-
+struct FileHandle {
+    uint64_t inode_id;
+    uint64_t offset;
+};
 
 class FileSys {
     friend int main(); // HACK: Just added when DEBUG.
@@ -31,7 +28,6 @@ public:
         blkidxer = std::make_shared<BlockIndexer>(sb, iocontext, blkalloc);
         inodetable = std::make_shared<INodeTable>(sb, iocontext, blkalloc, blkidxer);
 
-        spdlog::info("[FileSys] 读取Super Block.");
         iocontext->read_super_block();
 
         if (!sb->valid()) {
@@ -43,6 +39,7 @@ public:
 
         debug_super_block_info();
     }
+    ~FileSys() {}
 
     void debug_super_block_info() {
         spdlog::debug("[FileSys] 硬盘Super Block信息:");
@@ -56,14 +53,14 @@ public:
         spdlog::debug("[FileSys] Bitmap Block Start LBA: 0x{:x}.", sb->data.bitmap_block_start_lba);
         spdlog::debug("[FileSys] Bitmap Blocks Count: {}.", sb->data.bitmap_blocks_cnt);
         spdlog::debug("[FileSys] INode Size: {} B.", sb->data.inode_size);
-        spdlog::debug("[FileSys] INodes Count: {}.", sb->data.inode_size);
+        spdlog::debug("[FileSys] INodes Count: {}.", sb->data.inodes_cnt);
         spdlog::debug("[FileSys] INode Valid Block Start LBA: 0x{:X}.",
                       sb->data.inode_valid_block_start_lba);
         spdlog::debug("[FileSys] INode Valid Blocks Count: {}.", sb->data.inode_valid_blocks_cnt);
         spdlog::debug("[FileSys] INode Block Start LBA: 0x{:X}.", sb->data.inode_block_start_lba);
         spdlog::debug("[FileSys] INode Blocks Count: {}.", sb->data.inode_blocks_cnt);
         spdlog::debug("[FileSys] Basic Blocks Count: {}.", sb->data.basic_blocks_cnt);
-        spdlog::debug("[FileSys] Root INode: 0x{:X}.", sb->data.root_inode);
+        spdlog::debug("[FileSys] Root INode: 0x{:X}.", sb->data.root_inode_id);
         spdlog::debug("[FileSys] Free Blocks: {}.", sb->data.free_blocks);
     }
 
@@ -72,10 +69,11 @@ public:
 
         spdlog::debug("[FileSys] 清空硬盘.");
         iocontext->clear();
+        inodetable->clear_cache();
 
         spdlog::debug("[FileSys] 写入Super Block.");
         *sb = create_superblock(disk->get_disk_size());
-        iocontext->refresh_super_block();
+        iocontext->flush_super_block();
 
         spdlog::debug("[FileSys] 写入bitmap.");
         blkalloc->reset_bitmap();
@@ -84,98 +82,152 @@ public:
         inodetable->reset_inode_bitmap();
 
         spdlog::debug("[FileSys] 创建根目录.");
-        create_dir(sb->data.root_inode, "/");
+        create_root_dir();
 
         spdlog::info("[FileSys] 格式化完成.");
     }
 
-private:
-    // TODO: path_inode_id -> path_str
-    void create_dir(uint32_t path_inode_id, std::string name) {
-        spdlog::info("[FileSys] 创建文件夹.");
-        spdlog::debug("[FileSys] 目录名: {}, 父目录INode: {}.", name, path_inode_id);
+    bool create_dir(std::string path, std::string name) {
+        spdlog::info("[FileSys] 创建目录 path:{}, name:{}.", path, name);
 
-        uint64_t inode_id;
-        if (!inodetable->allocate_inode(inode_id)) {
-            spdlog::warn("[FileSys] 无空闲INode.");
-            return;
-        }
+        auto path_id = lookup_path(path);
+        if (!path_id)
+            return false;
 
-        spdlog::debug("[FileSys] 填充INode信息.");
-        INode inode(inode_id, path_inode_id);
-        inode.file_type = FileType::Directory;
-        inode.storage_type = StorageType::Inline;
-        inode.block_lba = 0; // 不使用
-        inode.size = 2 * sb->data.diritem_size;
+        auto dir_id = inodetable->allocate_inode(FileType::Directory);
+        if (!dir_id)
+            return false;
 
-        spdlog::debug("[FileSys] 目录写入INode.");
-        DirItem basic_dir[2] = {DirItem(inode_id, "."), DirItem(path_inode_id, "..")};
-        std::memcpy(inode.inline_data, basic_dir, 2 * DIRITEM_SIZE);
-
-        spdlog::debug("[FileSys] INode写入硬盘.");
-        std::vector<uint8_t> buffer(sb->data.block_size);
-        uint32_t inode_block_lba =
-            sb->data.inode_block_start_lba + inode_id / sb->data.inodes_per_block;
-        iocontext->read_block(inode_block_lba, buffer);
-        std::memcpy(buffer.data() + (inode_id % sb->data.inodes_per_block) * sb->data.inode_size,
-                    &inode, sizeof(inode));
-        iocontext->write_block(inode_block_lba, buffer);
-
-        if (name == "/")
-            return;
-
-        dir_add_item(path_inode_id, inode_id, name);
+        inodetable->add_diritem(dir_id.value(), ".", dir_id.value());
+        inodetable->add_diritem(dir_id.value(), "..", path_id.value());
+        inodetable->add_diritem(path_id.value(), name, dir_id.value());
+        return true;
     }
 
-    ~FileSys() {
-        // block_manager.clear();
-    }
-
-    // FIX:现在size不能超过BLOCK_SIZE
-    void list_directory(uint64_t path_inode_id) {
-        spdlog::info("[FileSys] 陈列目录项.");
-
-        INode inode;
-        inodetable->get_inode(path_inode_id, &inode);
-        spdlog::debug("[FileSys] INode Size: {} B", inode.size);
-
-        std::vector<uint8_t> items_buffer(sb->data.block_size);
-        uint64_t cur_size = 0;
-        uint64_t block_idx = 0;
-
-        while (cur_size < inode.size) {
-            items_buffer = inodetable->read_data(path_inode_id, cur_size, sb->data.block_size);
-            uint64_t current_block_data_size =
-                std::min((uint64_t)sb->data.block_size, inode.size - cur_size);
-
-            for (uint32_t j = 0; j < current_block_data_size; j += sizeof(DirItem)) {
-                DirItem *item = reinterpret_cast<DirItem *>(items_buffer.data() + j);
-                if (item->valid) {
-                    std::cout << std::format("{:9d} {}\n", item->inode_id, item->name);
-                }
+    void list_directory(std::string path) {
+        spdlog::info("[FileSys] 列出目录项 path:{}.", path);
+        auto node_id = lookup_path(path);
+        if (!node_id)
+            return;
+        INode node = inodetable->get_inode_info(node_id.value());
+        const uint64_t epoch_num = 1024;
+        for (uint64_t offset = 0; offset < node.size; offset += epoch_num * sb->data.diritem_size) {
+            std::vector<uint8_t> buffer(epoch_num * sb->data.diritem_size);
+            auto size = inodetable->read_data(node_id.value(), offset, buffer);
+            buffer.resize(size);
+            for (auto i = 0; i < buffer.size(); i += sb->data.diritem_size) {
+                DirItem *item = reinterpret_cast<DirItem *>(buffer.data() + i);
+                INode node = inodetable->get_inode_info(item->inode_id);
+                std::cout << std::format("{} {} {}\n", item->inode_id, node.size, item->name);
             }
-
-            cur_size += current_block_data_size;
-            block_idx++;
+            std::cout << "\n";
         }
     }
 
-    void dir_add_item(uint64_t dir_inode_id, uint64_t item_inode_id, std::string item_name) {
-        spdlog::info("[FileSys] 目录添加项.");
+    bool create_file(std::string path, std::string name) {
+        spdlog::info("[FileSys] 创建文件 path:{}, name:{}.", path, name);
 
-        INode node;
-        inodetable->get_inode(dir_inode_id, &node);
+        auto path_id = lookup_path(path);
+        if (!path_id)
+            return false;
 
-        // TODO:
-        if (inodetable->find_inode_by_name(dir_inode_id, item_name))
+        auto new_file_id = inodetable->allocate_inode(FileType::File);
+        if (!new_file_id)
+            return false;
+
+        inodetable->add_diritem(path_id.value(), name, new_file_id.value());
+        return true;
+    }
+
+    std::optional<uint64_t> open(std::string path, uint64_t offset = 0) {
+        auto inode_id_opt = lookup_path(path);
+        if (!inode_id_opt) {
+            return std::nullopt;
+        }
+        auto inode_id = inode_id_opt.value();
+
+        INode node = inodetable->get_inode_info(inode_id);
+        if (node.file_type != FileType::File) {
+            return std::nullopt;
+        }
+
+        uint64_t fd = cur_fd++;
+        fd_table[fd] = FileHandle{.inode_id = inode_id, .offset = offset};
+
+        return fd;
+    }
+
+    void close(uint64_t fd) {
+        if (fd_table.find(fd) == fd_table.end())
             return;
+        fd_table.erase(fd);
+    }
 
-        spdlog::debug("[FileSys] 填充目录项信息.");
-        DirItem new_item(item_inode_id, item_name);
+    bool write(uint64_t fd, std::span<uint8_t> data) {
+        if (!fd_table.count(fd))
+            return false;
+        auto &handle = fd_table[fd];
 
-        inodetable->write_data(
-            dir_inode_id, node.size,
-            std::span<uint8_t>(reinterpret_cast<uint8_t *>(&new_item), sb->data.diritem_size));
+        bool success = inodetable->write_data(handle.inode_id, handle.offset, data);
+        if (success) {
+            handle.offset += data.size();
+        }
+        return success;
+    }
+
+    size_t read(uint64_t fd, std::span<uint8_t> buffer) {
+        if (!fd_table.count(fd))
+            return 0;
+        auto &handle = fd_table[fd];
+        auto size = inodetable->read_data(handle.inode_id, handle.offset, buffer);
+        handle.offset += size;
+        return size;
+    }
+
+    void seek(uint64_t fd, uint64_t offset) {
+        if (!fd_table.count(fd))
+            return;
+        fd_table[fd].offset = offset;
+    }
+
+    bool has_dir(std::string path) {
+        auto inode_id_opt = lookup_path(path);
+        if (!inode_id_opt)
+            return false;
+        INode inode = inodetable->get_inode_info(inode_id_opt.value());
+        return inode.file_type == FileType::Directory;
+    }
+
+private:
+    void create_root_dir() {
+        spdlog::info("[FileSys] 创建根目录.");
+        sb->data.root_inode_id = inodetable->allocate_inode(FileType::Directory).value();
+        inodetable->add_diritem(sb->data.root_inode_id, ".", sb->data.root_inode_id);
+        inodetable->add_diritem(sb->data.root_inode_id, "..", sb->data.root_inode_id);
+    }
+
+    std::optional<uint64_t> lookup_path(std::string_view path) {
+        if (path[0] != '/')
+            return std::nullopt;
+        path = path.substr(1);
+        uint64_t cur_node_id = sb->data.root_inode_id;
+
+        std::string name;
+        while (path.size()) {
+            auto idx = path.find('/');
+            if (idx == std::string::npos) {
+                name = path;
+                path = "";
+            } else {
+                name = path.substr(0, idx);
+                path = path.substr(idx + 1);
+            }
+            auto optid = inodetable->find_inode_by_name(cur_node_id, name);
+            if (!optid)
+                return std::nullopt;
+            cur_node_id = optid.value();
+        }
+        return cur_node_id;
     }
 
 private:
@@ -185,4 +237,7 @@ private:
     std::shared_ptr<BlockAllocator> blkalloc;
     std::shared_ptr<INodeTable> inodetable;
     std::shared_ptr<BlockIndexer> blkidxer;
+
+    uint64_t cur_fd = 0;
+    std::unordered_map<uint64_t, FileHandle> fd_table;
 };

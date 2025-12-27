@@ -32,10 +32,13 @@ union SuperBlock {
 
         uint64_t diritem_size;
 
-        uint64_t root_inode;
+        uint64_t root_inode_id;
         uint64_t free_blocks;
 
         uint64_t BTree_M;
+
+        uint32_t bloom_bits;
+        uint16_t filename_size;
     } data;
     char padding[BLOCK_SIZE];
 
@@ -61,30 +64,35 @@ inline const SuperBlock create_superblock(uint32_t disk_size_gb) {
     rst.data.super_blocks_cnt = 1;
 
     rst.data.bitmap_block_start_lba = rst.data.super_blocks_cnt;
-    rst.data.bitmap_blocks_cnt = (rst.data.bits_per_block + rst.data.total_blocks - 1) / rst.data.bits_per_block;
+    rst.data.bitmap_blocks_cnt =
+        (rst.data.bits_per_block + rst.data.total_blocks - 1) / rst.data.bits_per_block;
 
     rst.data.inode_size = INODE_SIZE;
+    rst.data.inode_inline_data_size = INODE_DATA_SIZE;
+
     rst.data.inodes_per_block = rst.data.block_size / rst.data.inode_size;
-    rst.data.inodes_cnt = rst.data.inodes_per_block * INODE_BLOCKS_COUNT;
-    rst.data.free_inodes = rst.data.inodes_cnt;
     rst.data.inode_valid_block_start_lba =
         rst.data.bitmap_block_start_lba + rst.data.bitmap_blocks_cnt;
+
+    rst.data.inode_blocks_cnt = (((1ull<<30) / rst.data.block_size) >> 7) * rst.data.disk_size_gb;
+    rst.data.inodes_cnt = rst.data.inodes_per_block * rst.data.inode_blocks_cnt;
+    rst.data.free_inodes = rst.data.inodes_cnt;
     rst.data.inode_valid_blocks_cnt =
         (rst.data.inodes_cnt + rst.data.bits_per_block - 1) / rst.data.bits_per_block;
     rst.data.inode_block_start_lba =
         rst.data.inode_valid_block_start_lba + rst.data.inode_valid_blocks_cnt;
-    rst.data.inode_blocks_cnt = INODE_BLOCKS_COUNT;
-    rst.data.inode_inline_data_size = INODE_DATA_SIZE;
+
 
     rst.data.basic_blocks_cnt = rst.data.super_blocks_cnt + rst.data.bitmap_blocks_cnt +
                                 rst.data.inode_valid_blocks_cnt + rst.data.inode_blocks_cnt;
 
     rst.data.diritem_size = DIRITEM_SIZE;
 
-    rst.data.root_inode = 0;
     rst.data.free_blocks = rst.data.total_blocks - rst.data.basic_blocks_cnt;
 
     rst.data.BTree_M = BTree_M;
+
+    rst.data.filename_size = FILENAME_SIZE;
 
     return rst;
 }

@@ -2,6 +2,7 @@
 #include "macros.hpp"
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <vector>
 
 enum class FileType : uint8_t {

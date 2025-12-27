@@ -70,21 +70,20 @@ public:
         return find_blocks(root_lba, file_block_idx, file_block_idx)[0];
     }
 
-    // TODO::
-    uint64_t insert_block(uint64_t root_lba, uint64_t file_block_idx, uint64_t file_data_lba) {
+    std::optional<uint64_t> insert_block(uint64_t root_lba, uint64_t file_block_idx, uint64_t file_data_lba) {
         spdlog::debug(
             "[DataBTree] 插入数据盘块. Root LBA: 0x{:X}, File Block Idx: {}, Data LBA: 0x{:X}",
             root_lba, file_block_idx, file_data_lba);
         if (root_lba == 0) {
-            uint64_t new_root_lba;
-            if (!blkalloc->allocate_block(new_root_lba)) {
-                return 0;
+            auto new_root_lba = blkalloc->allocate_block();
+            if (!new_root_lba) {
+                return std::nullopt;
             }
             auto node = std::make_unique<BTreeNode>(true);
             node->key_cnt = 1;
             node->keys[0] = file_block_idx;
             node->ptrs[0] = file_data_lba;
-            write_node(new_root_lba, node.get());
+            write_node(new_root_lba.value(), node.get());
             return new_root_lba;
         }
 
@@ -93,19 +92,19 @@ public:
         BTreeNode *root_node = reinterpret_cast<BTreeNode *>(buffer.data());
 
         if (root_node->key_cnt == sb->data.BTree_M - 1) {
-            uint64_t new_root_lba;
-            if (!blkalloc->allocate_block(new_root_lba)) {
-                return 0;
+            auto new_root_lba = blkalloc->allocate_block();
+            if (!new_root_lba) {
+                return std::nullopt;
             }
 
             BTreeNode new_root(false);
             new_root.key_cnt = 0;
             new_root.ptrs[0] = root_lba;
-            write_node(new_root_lba, &new_root);
-            if (!split_child(new_root_lba, 0)) {
-                return 0;
+            write_node(new_root_lba.value(), &new_root);
+            if (!split_child(new_root_lba.value(), 0)) {
+                return std::nullopt;
             }
-            root_lba = new_root_lba;
+            root_lba = new_root_lba.value();
         }
 
         node_insert(root_lba, file_block_idx, file_data_lba);
@@ -119,8 +118,8 @@ private:
     }
 
     bool split_child(uint64_t father_node_lba, uint64_t child_idx) {
-        uint64_t new_node_lba;
-        if (!blkalloc->allocate_block(new_node_lba)) {
+        auto new_node_lba = blkalloc->allocate_block();
+        if (!new_node_lba) {
             return false;
         }
 
@@ -143,7 +142,7 @@ private:
             std::memcpy(new_node->ptrs, child_node->ptrs + mid,
                         new_node->key_cnt * sizeof(uint64_t));
 
-            child_node->nxt = new_node_lba;
+            child_node->nxt = new_node_lba.value();
             new_node->nxt = child_node->nxt;
         } else {
             new_node->key_cnt = sb->data.BTree_M - 1 - mid - 1;
@@ -164,11 +163,11 @@ private:
         for (uint64_t i = father_node->key_cnt; i > insert_idx + 1; i--)
             father_node->ptrs[i] = father_node->ptrs[i - 1];
         father_node->keys[insert_idx] = child_node->keys[mid];
-        father_node->ptrs[insert_idx + 1] = new_node_lba;
+        father_node->ptrs[insert_idx + 1] = new_node_lba.value();
 
         write_node(father_node_lba, father_node);
         write_node(child_lba, child_node);
-        write_node(new_node_lba, new_node.get());
+        write_node(new_node_lba.value(), new_node.get());
 
         return true;
     }
