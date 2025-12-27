@@ -76,6 +76,19 @@ public:
         return lba;
     }
 
+    void free_block(uint64_t lba) {
+        uint64_t bitmap_lba = lba / sb->data.bits_per_block + sb->data.bitmap_block_start_lba;
+        uint64_t byte_idx = (lba % sb->data.bits_per_block) / 8;
+        uint64_t bit_idx = lba % 8;
+
+        std::vector<uint8_t> buffer(sb->data.block_size);
+        iocontext->read_block(bitmap_lba, buffer);
+        buffer[byte_idx] &= ~((uint8_t)1 << (7 - bit_idx));
+        iocontext->write_block(bitmap_lba, buffer);
+
+        sb->data.free_blocks++;
+    }
+
 private:
     std::shared_ptr<SuperBlock> sb;
     std::shared_ptr<IOContext> iocontext;

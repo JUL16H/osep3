@@ -7,11 +7,13 @@
 struct DirItem {
     uint64_t inode_id;
     char name[FILENAME_SIZE];
-    DirItem(uint64_t _inode_id = 0, std::string _name = "") {
-        std::memset(this, 0, DIRITEM_SIZE);
-        inode_id = _inode_id;
-        std::memcpy(name, _name.data(), std::min((size_t)FILENAME_SIZE, _name.size()));
-    }
+    uint8_t valid;
+    // DirItem(uint64_t _inode_id = 0, std::string _name = "") {
+    //     std::memset(this, 0, DIRITEM_SIZE);
+    //     inode_id = _inode_id;
+    //     valid = true;
+    //     std::memcpy(name, _name.data(), std::min((size_t)FILENAME_SIZE, _name.size()));
+    // }
 };
 static_assert(sizeof(DirItem) == DIRITEM_SIZE);
 
@@ -80,6 +82,30 @@ public:
         node->file_type = type;
 
         return id;
+    }
+
+    void free_inode(uint64_t id) {
+        INode *node = &get(id)->node;
+
+        uint64_t lba = id / sb->data.bits_per_block + sb->data.inode_block_start_lba;
+        uint64_t byte_idx = (id % sb->data.bits_per_block) / 8;
+        uint64_t bit_idx = id % 8;
+
+        if (node->storage_type == StorageType::Direct) {
+            blkalloc->free_block(node->block_lba);
+        } else if (node->storage_type == StorageType::Index) {
+            blkidxer->free_node(node->block_lba);
+        }
+
+        std::memset(&get(id)->node, 0, sb->data.inode_size);
+        get(id)->dirty = true;
+
+        std::vector<uint8_t> buffer(sb->data.block_size);
+        iocontext->read_block(lba, buffer);
+        buffer[byte_idx] &= ~((uint8_t)1 << (7 - bit_idx));
+        iocontext->write_block(lba, buffer);
+
+        sb->data.free_inodes++;
     }
 
     size_t read_data(uint64_t id, uint64_t offset, std::span<uint8_t> data) {
@@ -248,26 +274,61 @@ public:
         return true;
     }
 
-    // TODO: 判断是否重名
     bool add_diritem(uint64_t id, std::string name, uint64_t to) {
         spdlog::debug("[INodeTable] 添加目录项, id: {}, name: {}, to id: {}.", id, name, to);
-        auto it = get(id);
-        INode *node = &it->node;
+
+        INode *node = &get(id)->node;
         if (node->file_type != FileType::Directory)
             return false;
 
-        std::vector<uint8_t> item_buffer(sb->data.diritem_size);
-        DirItem *new_item = reinterpret_cast<DirItem *>(item_buffer.data());
+        uint64_t offset = node->size;
+        std::vector<uint8_t> items_buffer(node->size);
+        read_data(id, 0, items_buffer);
+        for (offset = 0; offset < node->size; offset += sb->data.diritem_size) {
+            DirItem *item = reinterpret_cast<DirItem *>(items_buffer.data() + offset);
+            if (!item->valid)
+                break;
+        }
+        std::vector<uint8_t> new_item_buffer(sb->data.diritem_size);
+        DirItem *new_item = reinterpret_cast<DirItem *>(new_item_buffer.data());
         uint16_t name_size = std::min((size_t)sb->data.filename_size - 1, name.size());
         std::memcpy(new_item->name, name.data(), name_size);
         new_item->name[name_size] = '\0';
         new_item->inode_id = to;
+        new_item->valid = true;
 
         if (find_inode_by_name(id, new_item->name).has_value())
             return false;
 
-        write_data(id, node->size, item_buffer);
+        write_data(id, offset, new_item_buffer);
+        get(id)->dirty = true;
+        get(to)->node.link_cnt++;
         return true;
+    }
+
+    // TODO: 检查id合法性
+    bool remove_diritem(uint64_t id, std::string name) {
+        INode *node = &get(id)->node;
+
+        std::vector<uint8_t> buffer(sb->data.diritem_size);
+        for (uint64_t i = 0; i < node->size; i += sb->data.diritem_size) {
+            read_data(id, i, buffer);
+            DirItem *item = reinterpret_cast<DirItem *>(buffer.data());
+            if (item->name == name) {
+                INode *item_node = &get(item->inode_id)->node;
+                if (item_node->file_type == FileType::Directory &&
+                    item_node->size != 2 * sb->data.diritem_size)
+                    return false;
+                if (--item_node->link_cnt <= 1) {
+                    free_inode(item->inode_id);
+                }
+                item->valid = false;
+                write_data(id, i, buffer);
+                get(id)->dirty = true;
+                return true;
+            }
+        }
+        return false;
     }
 
     // TODO: 判断是否存在
@@ -339,7 +400,8 @@ private:
         }
 
         CacheItem old_item = cache_list.back();
-        write_inode_to_disk(old_item.id, &old_item.node);
+        if (old_item.dirty)
+            write_inode_to_disk(old_item.id, &old_item.node);
         cache_list.pop_back();
         cache_mp.erase(old_item.id);
 
@@ -360,3 +422,6 @@ private:
     std::list<CacheItem> cache_list;
     std::unordered_map<uint64_t, typename decltype(cache_list)::iterator> cache_mp;
 };
+
+// TODO:
+class INodeDataIterator {};

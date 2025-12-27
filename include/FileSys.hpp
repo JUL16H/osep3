@@ -6,6 +6,7 @@
 #include "IOContext.hpp"
 #include "SuperBlock.hpp"
 #include <cstdint>
+#include <filesystem>
 #include <format>
 #include <iostream>
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -18,7 +19,6 @@ struct FileHandle {
 };
 
 class FileSys {
-    friend int main(); // HACK: Just added when DEBUG.
 public:
     FileSys(IDisk *_disk) : disk(_disk) {
         spdlog::info("[FileSys] 文件系统启动.");
@@ -104,6 +104,41 @@ public:
         return true;
     }
 
+    bool remove_file(std::string path_str) {
+        if (!has_file(path_str))
+            return false;
+        std::filesystem::path path(path_str);
+
+        std::string name = path.filename().string();
+        std::string parent = path.parent_path().string();
+
+        auto path_inode = lookup_path(parent);
+        if (!path_inode)
+            return false;
+
+        return inodetable->remove_diritem(path_inode.value(), name);
+    }
+
+    bool remove_dir(std::string path_str) {
+        if (path_str.empty())
+            return false;
+
+        if (*path_str.rbegin() == '/')
+            path_str = path_str.substr(0, path_str.size() - 1);
+
+        std::filesystem::path path(path_str);
+
+        std::string name = path.filename().string();
+        std::string parent = path.parent_path().string();
+
+        auto path_inode = lookup_path(parent);
+        if (!path_inode)
+            return false;
+
+        return inodetable->remove_diritem(path_inode.value(), name);
+    }
+
+    // HACK:
     void list_directory(std::string path) {
         spdlog::info("[FileSys] 列出目录项 path:{}.", path);
         auto node_id = lookup_path(path);
@@ -117,6 +152,8 @@ public:
             buffer.resize(size);
             for (auto i = 0; i < buffer.size(); i += sb->data.diritem_size) {
                 DirItem *item = reinterpret_cast<DirItem *>(buffer.data() + i);
+                if (!item->valid)
+                    continue;
                 INode node = inodetable->get_inode_info(item->inode_id);
                 std::cout << std::format("{} {} {}\n", item->inode_id, node.size, item->name);
             }
@@ -196,6 +233,14 @@ public:
             return false;
         INode inode = inodetable->get_inode_info(inode_id_opt.value());
         return inode.file_type == FileType::Directory;
+    }
+
+    bool has_file(std::string path) {
+        auto inode_id_opt = lookup_path(path);
+        if (!inode_id_opt)
+            return false;
+        INode inode = inodetable->get_inode_info(inode_id_opt.value());
+        return inode.file_type == FileType::File;
     }
 
 private:

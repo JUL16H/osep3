@@ -111,6 +111,22 @@ public:
         return root_lba;
     }
 
+    void free_node(uint64_t node_lba) {
+        std::vector<uint8_t> buffer(sb->data.block_size);
+        iocontext->read_block(node_lba, buffer);
+        auto *node = reinterpret_cast<BTreeNode*>(buffer.data());
+
+        if (node->is_leaf) {
+            for (uint64_t i = 0; i < node->key_cnt; i++) {
+                blkalloc->free_block(node->ptrs[i]);
+            }
+            return;
+        }
+
+        for (uint64_t i = 0; i < node->key_cnt; i++)
+            free_node(node->ptrs[i]);
+    }
+
 private:
     void write_node(uint64_t lba, BTreeNode *node) {
         iocontext->write_block(
@@ -142,8 +158,8 @@ private:
             std::memcpy(new_node->ptrs, child_node->ptrs + mid,
                         new_node->key_cnt * sizeof(uint64_t));
 
-            child_node->nxt = new_node_lba.value();
             new_node->nxt = child_node->nxt;
+            child_node->nxt = new_node_lba.value();
         } else {
             new_node->key_cnt = sb->data.BTree_M - 1 - mid - 1;
             std::memcpy(new_node->keys, child_node->keys + mid + 1,
