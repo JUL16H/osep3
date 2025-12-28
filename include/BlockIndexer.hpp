@@ -10,8 +10,12 @@ class BlockBTreeAdapter : public IBPTreeStorage<uint64_t, uint64_t> {
 public:
     BlockBTreeAdapter(std::shared_ptr<IOContext> _ioc, std::shared_ptr<BlockAllocator> _alloc)
         : ioc(_ioc), alloc(_alloc) {}
-    void read_node(uint64_t id, std::span<uint8_t> buffer) override { ioc->read_block(id, buffer); }
-    void write_node(uint64_t id, std::span<uint8_t> data) override { ioc->write_block(id, data); }
+    void read_node(uint64_t id, std::span<uint8_t> buffer) override {
+        std::memcpy(buffer.data(), ioc->read_block(id)->data(), buffer.size());
+    }
+    void write_node(uint64_t id, std::span<uint8_t> data) override {
+        std::memcpy(ioc->acquire_block(id)->data(), data.data(), data.size());
+    }
     std::optional<uint64_t> allocate_node() override { return alloc->allocate_block(); }
     void free_node(uint64_t id) override { alloc->free_block(id); }
     void free_val(uint64_t val) override { alloc->free_block(val); }

@@ -28,9 +28,10 @@ public:
 
     void reset_inode_bitmap() {
         spdlog::debug("[INodeManager] 写入INode位图");
-        std::vector<uint8_t> buffer(sb->data.block_size, 0);
+        std::shared_ptr<Buffer> buffer;
         for (uint64_t i = 0; i < sb->data.inode_valid_blocks_cnt; i++) {
-            iocontext->write_block(i + sb->data.inode_valid_block_start_lba, buffer);
+            buffer = iocontext->acquire_block(i + sb->data.inode_valid_block_start_lba);
+            std::ranges::fill(*buffer, 0);
         }
         spdlog::debug("[INodeManager] INode位图写入完成");
     }
@@ -40,16 +41,16 @@ public:
         bool find = false;
         uint64_t bitmap_block_idx, byte_idx;
         uint8_t bit_idx;
-        std::vector<uint8_t> buffer(sb->data.block_size);
 
         for (bitmap_block_idx = 0; bitmap_block_idx < sb->data.inode_valid_blocks_cnt;
              bitmap_block_idx++) {
-            iocontext->read_block(bitmap_block_idx + sb->data.inode_valid_block_start_lba, buffer);
+            std::shared_ptr<const Buffer> cur_buffer =
+                iocontext->acquire_block(bitmap_block_idx + sb->data.inode_valid_block_start_lba);
             for (byte_idx = 0; byte_idx < sb->data.block_size; byte_idx++) {
-                if (buffer[byte_idx] != 0xff) {
+                if ((*cur_buffer)[byte_idx] != 0xff) {
                     find = true;
                     for (bit_idx = 0; bit_idx < 8; bit_idx++) {
-                        if (~buffer[byte_idx] & (1 << (7 - bit_idx)))
+                        if (~(*cur_buffer)[byte_idx] & (1 << (7 - bit_idx)))
                             break;
                     }
                 }
@@ -64,15 +65,18 @@ public:
             return std::nullopt;
         }
 
-        buffer[byte_idx] |= (1 << (7 - bit_idx));
-        iocontext->write_block(bitmap_block_idx + sb->data.inode_valid_block_start_lba, buffer);
+        std::shared_ptr<Buffer> buffer =
+            iocontext->acquire_block(bitmap_block_idx + sb->data.inode_valid_block_start_lba);
+        (*buffer)[byte_idx] |= (1 << (7 - bit_idx));
         uint64_t id = bitmap_block_idx * sb->data.bits_per_block + byte_idx * 8 + bit_idx;
         spdlog::debug("[INodeManager] 找到空闲INode, id: {}", id);
 
         sb->data.free_inodes--;
 
-        INode *node = &get(id)->node;
+        auto it = get(id);
+        INode *node = &it->node;
         node->file_type = type;
+        it->dirty = true;
 
         return id;
     }
@@ -93,10 +97,8 @@ public:
         std::memset(&get(id)->node, 0, sb->data.inode_size);
         get(id)->dirty = true;
 
-        std::vector<uint8_t> buffer(sb->data.block_size);
-        iocontext->read_block(lba, buffer);
-        buffer[byte_idx] &= ~((uint8_t)1 << (7 - bit_idx));
-        iocontext->write_block(lba, buffer);
+        std::shared_ptr<Buffer> buffer = iocontext->acquire_block(lba);
+        (*buffer)[byte_idx] &= ~((uint8_t)1 << (7 - bit_idx));
 
         sb->data.free_inodes++;
     }
@@ -110,9 +112,9 @@ public:
         if (node->storage_type == StorageType::Inline) {
             std::memcpy(data.data(), node->inline_data + offset, size);
         } else if (node->storage_type == StorageType::Direct) {
-            std::vector<uint8_t> data_block_buffer(sb->data.block_size);
-            iocontext->read_block(node->block_lba, data_block_buffer);
-            std::memcpy(data.data(), data_block_buffer.data() + offset, size);
+            std::shared_ptr<const Buffer> data_block_buffer =
+                iocontext->read_block(node->block_lba);
+            std::memcpy(data.data(), data_block_buffer->data() + offset, size);
         } else if (node->storage_type == StorageType::Index) {
             uint64_t in_block_offset = offset % sb->data.block_size;
             uint64_t write_pos = 0;
@@ -120,15 +122,15 @@ public:
             uint64_t cur_lba;
             uint64_t remain_size = size;
 
-            std::vector<uint8_t> data_block_buffer(sb->data.block_size);
+            std::shared_ptr<const Buffer> data_block_buffer;
             for (uint64_t i = offset / sb->data.block_size;
                  i <= (offset + size - 1) / sb->data.block_size; i++) {
                 cur_lba = blkidxer->find_block(node->block_lba, i).value_or(0);
                 cur_epoch_size = std::min(remain_size, sb->data.block_size - in_block_offset);
                 if (cur_lba != 0) {
-                    iocontext->read_block(cur_lba, data_block_buffer);
-                    std::memcpy(data.data() + write_pos, data_block_buffer.data() + in_block_offset,
-                                cur_epoch_size);
+                    data_block_buffer = iocontext->read_block(cur_lba);
+                    std::memcpy(data.data() + write_pos,
+                                data_block_buffer->data() + in_block_offset, cur_epoch_size);
                 } else {
                     std::memset(data.data() + write_pos, 0, cur_epoch_size);
                 }
@@ -161,18 +163,17 @@ public:
             if (!data_block_lba) {
                 return false;
             }
-            std::vector<uint8_t> data_buffer(sb->data.block_size);
-            std::memcpy(data_buffer.data(), node->inline_data, node->size);
+            std::shared_ptr<Buffer> data_buffer = iocontext->acquire_block(data_block_lba.value());
+            std::memcpy(data_buffer->data(), node->inline_data, node->size);
             std::memset(node->inline_data, 0, node->size);
             if (offset <= sb->data.block_size) {
                 const uint64_t cur_block_new_data_size =
                     std::min(data.size() + offset, (size_t)sb->data.block_size) - offset;
-                std::memcpy(data_buffer.data() + offset, data.data(), cur_block_new_data_size);
+                std::memcpy(data_buffer->data() + offset, data.data(), cur_block_new_data_size);
                 node->size = std::max(node->size, offset + cur_block_new_data_size);
                 offset += cur_block_new_data_size;
                 data = data.subspan(cur_block_new_data_size);
             }
-            iocontext->write_block(data_block_lba.value(), data_buffer);
             node->block_lba = data_block_lba.value();
             node->storage_type = StorageType::Direct;
             if (data.empty()) {
@@ -182,10 +183,8 @@ public:
         }
         if (node->storage_type == StorageType::Direct) {
             if (data.size() + offset <= sb->data.block_size) {
-                std::vector<uint8_t> data_buffer(sb->data.block_size);
-                iocontext->read_block(node->block_lba, data_buffer);
-                std::memcpy(data_buffer.data() + offset, data.data(), data.size());
-                iocontext->write_block(node->block_lba, data_buffer);
+                std::shared_ptr<Buffer> data_buffer = iocontext->acquire_block(node->block_lba);
+                std::memcpy(data_buffer->data() + offset, data.data(), data.size());
                 node->size = std::max(node->size, offset + data.size());
                 write_inode_to_disk(id, node);
                 return true;
@@ -194,10 +193,8 @@ public:
             if (offset <= sb->data.block_size) {
                 const uint64_t cur_block_new_data_size =
                     std::min(data.size() + offset, (size_t)sb->data.block_size) - offset;
-                std::vector<uint8_t> data_buffer(sb->data.block_size);
-                iocontext->read_block(node->block_lba, data_buffer);
-                std::memcpy(data_buffer.data() + offset, data.data(), cur_block_new_data_size);
-                iocontext->write_block(node->block_lba, data_buffer);
+                std::shared_ptr<Buffer> data_buffer = iocontext->acquire_block(node->block_lba);
+                std::memcpy(data_buffer->data() + offset, data.data(), cur_block_new_data_size);
                 node->size = std::max(node->size, offset + cur_block_new_data_size);
                 offset += cur_block_new_data_size;
                 data = data.subspan(cur_block_new_data_size);
@@ -218,7 +215,6 @@ public:
                     std::min(data.size(), (size_t)sb->data.block_size - in_blk_offset);
 
                 uint64_t blk_lba = blkidxer->find_block(node->block_lba, cur_blk_idx).value_or(0);
-                std::vector<uint8_t> blk_buffer(sb->data.block_size);
 
                 if (blk_lba == 0) {
                     auto new_blk_lba = blkalloc->allocate_block();
@@ -230,12 +226,9 @@ public:
                         return false;
                     node->block_lba = optlba.value();
                     blk_lba = new_blk_lba.value();
-                } else {
-                    iocontext->read_block(blk_lba, blk_buffer);
                 }
-
-                std::memcpy(blk_buffer.data() + in_blk_offset, data.data(), batch_size);
-                iocontext->write_block(blk_lba, blk_buffer);
+                std::shared_ptr<Buffer> blk_buffer = iocontext->acquire_block(blk_lba);
+                std::memcpy(blk_buffer->data() + in_blk_offset, data.data(), batch_size);
 
                 data = data.subspan(batch_size);
                 cur_pos += batch_size;
@@ -297,22 +290,19 @@ public:
 
     // TODO: 判断是否存在
     bool get_inode_from_disk(uint64_t id, INode *node) {
-        std::vector<uint8_t> buffer(sb->data.block_size);
-        iocontext->read_block(id / sb->data.inodes_per_block + sb->data.inode_block_start_lba,
-                              buffer);
-        std::memcpy(node, buffer.data() + (id % sb->data.inodes_per_block) * sb->data.inode_size,
+        std::shared_ptr<const Buffer> buffer =
+            iocontext->read_block(id / sb->data.inodes_per_block + sb->data.inode_block_start_lba);
+        std::memcpy(node, buffer->data() + (id % sb->data.inodes_per_block) * sb->data.inode_size,
                     sb->data.inode_size);
         return true;
     }
 
     bool write_inode_to_disk(uint64_t inode_id, INode *node) {
         uint64_t block_lba = inode_id / sb->data.inodes_per_block + sb->data.inode_block_start_lba;
-        std::vector<uint8_t> buffer(sb->data.block_size);
-        iocontext->read_block(inode_id / sb->data.inodes_per_block + sb->data.inode_block_start_lba,
-                              buffer);
-        std::memcpy(buffer.data() + (inode_id % sb->data.inodes_per_block) * sb->data.inode_size,
+        std::shared_ptr<Buffer> buffer = iocontext->acquire_block(
+            inode_id / sb->data.inodes_per_block + sb->data.inode_block_start_lba);
+        std::memcpy(buffer->data() + (inode_id % sb->data.inodes_per_block) * sb->data.inode_size,
                     node, sb->data.inode_size);
-        iocontext->write_block(block_lba, buffer);
         return true;
     }
 

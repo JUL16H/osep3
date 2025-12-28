@@ -33,7 +33,8 @@ public:
         for (auto &item : cache_list) {
             if (!item.dirty)
                 continue;
-            backend->save(item.key, &item.val);
+            backend->save(item.key, *item.val);
+            item.dirty = false;
         }
     }
 
@@ -74,6 +75,7 @@ private:
 
             if (it->dirty)
                 backend->save(it->key, *it->val);
+
             cache_map.erase(it->key);
             cache_list.erase(std::next(it).base());
             return;

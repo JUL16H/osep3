@@ -30,7 +30,7 @@ public:
                     clear();
                     return;
                 } else {
-                    spdlog::info("[VDisk] 成功加载现有虚拟硬盘.", disk_path);
+                   spdlog::info("[VDisk] 成功加载现有虚拟硬盘.", disk_path);
                 }
             } catch (const std::filesystem::filesystem_error &e) {
                 spdlog::error("[VDisk] 获取文件大小时出错: {}", e.what());

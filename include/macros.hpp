@@ -1,7 +1,7 @@
 #pragma once
 #include <cstdint>
 
-constexpr uint32_t BLOCK_SIZE = 4<<10;
+constexpr uint32_t BLOCK_SIZE = 16<<10;
 
 constexpr uint64_t MAGIC_NUMBER = 0xEA6191;
 constexpr uint64_t VERSION = 7;
