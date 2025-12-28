@@ -84,23 +84,58 @@ public:
         spdlog::debug("[FileSys] 创建根目录.");
         create_root_dir();
 
+        iocontext->flush_super_block();
+        inodetable->flush();
+
         spdlog::info("[FileSys] 格式化完成.");
     }
 
-    bool create_dir(std::string path, std::string name) {
-        spdlog::info("[FileSys] 创建目录 path:{}, name:{}.", path, name);
+    bool create_dir(std::string path_str) {
+        std::filesystem::path path(path_str);
 
-        auto path_id = lookup_path(path);
-        if (!path_id)
+        if (path.has_relative_path() && !path.has_filename()) {
+            path = path.parent_path();
+        }
+
+        std::string name = path.filename().string();
+        std::string parent_path_str = path.parent_path().string();
+
+        if (name.empty() || path_str == "/") {
+            spdlog::error("[FileSys] 创建目录失败: 路径非法或试图创建根目录");
             return false;
+        }
 
-        auto dir_id = inodetable->allocate_inode(FileType::Directory);
-        if (!dir_id)
+        spdlog::info("[FileSys] 创建目录 全路径:{}, 父目录:{}, 新目录名:{}.", path.string(),
+                     parent_path_str, name);
+
+        auto parent_id_opt = lookup_path(parent_path_str);
+        if (!parent_id_opt) {
+            spdlog::error("[FileSys] 创建目录失败: 父目录不存在 {}", parent_path_str);
             return false;
+        }
+        uint64_t parent_id = parent_id_opt.value();
 
-        inodetable->add_diritem(dir_id.value(), ".", dir_id.value());
-        inodetable->add_diritem(dir_id.value(), "..", path_id.value());
-        inodetable->add_diritem(path_id.value(), name, dir_id.value());
+        if (inodetable->find_inode_by_name(parent_id, name).has_value()) {
+            spdlog::warn("[FileSys] 创建目录失败: 目标已存在 {}/{}", parent_path_str, name);
+            return false;
+        }
+
+        auto dir_id_opt = inodetable->allocate_inode(FileType::Directory);
+        if (!dir_id_opt) {
+            spdlog::error("[FileSys] 创建目录失败: Inode 耗尽");
+            return false;
+        }
+        uint64_t new_inode_id = dir_id_opt.value();
+
+        inodetable->add_diritem(new_inode_id, ".", new_inode_id);
+        inodetable->add_diritem(new_inode_id, "..", parent_id);
+
+        if (!inodetable->add_diritem(parent_id, name, new_inode_id)) {
+            spdlog::error("[FileSys] 创建目录失败: 写入父目录失败");
+            inodetable->free_inode(new_inode_id);
+            return false;
+        }
+
         return true;
     }
 
@@ -175,36 +210,62 @@ public:
                                      : 0.0;
 
         std::cout << "==================== Disk Info ====================\n";
-
         std::cout << std::format("Disk Capacity : {} GB\n", data.disk_size_gb);
         std::cout << std::format("Block Size    : {} Bytes\n", data.block_size);
-        std::cout << std::format("File System   : v{}\n", data.version);
-
         std::cout << "------------------- Block Usage -------------------\n";
         std::cout << std::format("Total Blocks  : {}\n", data.total_blocks);
         std::cout << std::format("Used Blocks   : {} ({:.2f}%)\n", used_blocks, block_usage_pct);
         std::cout << std::format("Free Blocks   : {}\n", data.free_blocks);
-
         std::cout << "------------------- INode Usage -------------------\n";
         std::cout << std::format("Total INodes  : {}\n", data.inodes_cnt);
         std::cout << std::format("Used INodes   : {} ({:.2f}%)\n", used_inodes, inode_usage_pct);
         std::cout << std::format("Free INodes   : {}\n", data.free_inodes);
-
         std::cout << "===================================================\n";
     }
 
-    bool create_file(std::string path, std::string name) {
-        spdlog::info("[FileSys] 创建文件 path:{}, name:{}.", path, name);
+    bool create_file(std::string path_str) {
+        std::filesystem::path path(path_str);
 
-        auto path_id = lookup_path(path);
-        if (!path_id)
+        if (path.has_relative_path() && !path.has_filename()) {
+            path = path.parent_path();
+        }
+
+        std::string name = path.filename().string();
+        std::string parent_path_str = path.parent_path().string();
+
+        if (name.empty()) {
+            spdlog::error("[FileSys] 创建文件失败: 文件名为空");
             return false;
+        }
 
-        auto new_file_id = inodetable->allocate_inode(FileType::File);
-        if (!new_file_id)
+        spdlog::info("[FileSys] 创建文件 全路径:{}, 父目录:{}, 文件名:{}.", path.string(),
+                     parent_path_str, name);
+
+        auto parent_id_opt = lookup_path(parent_path_str);
+        if (!parent_id_opt) {
+            spdlog::error("[FileSys] 创建文件失败: 父目录不存在 {}", parent_path_str);
             return false;
+        }
+        uint64_t parent_id = parent_id_opt.value();
 
-        inodetable->add_diritem(path_id.value(), name, new_file_id.value());
+        if (inodetable->find_inode_by_name(parent_id, name).has_value()) {
+            spdlog::warn("[FileSys] 创建文件失败: 目标已存在 {}/{}", parent_path_str, name);
+            return false;
+        }
+
+        auto file_id_opt = inodetable->allocate_inode(FileType::File);
+        if (!file_id_opt) {
+            spdlog::error("[FileSys] 创建文件失败: Inode 耗尽");
+            return false;
+        }
+        uint64_t new_inode_id = file_id_opt.value();
+
+        if (!inodetable->add_diritem(parent_id, name, new_inode_id)) {
+            spdlog::error("[FileSys] 创建文件失败: 写入父目录失败");
+            inodetable->free_inode(new_inode_id);
+            return false;
+        }
+
         return true;
     }
 

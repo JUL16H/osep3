@@ -64,23 +64,13 @@ public:
             } else if (original_cmd == "exit") {
                 return;
             } else if (original_cmd == "mkdir") {
-                switch (args.size()) {
-                case 2:
-                    filesys->create_dir(args[0], args[1]);
-                    break;
-                case 3:
-                    filesys->create_dir(path_join(args[0], args[1]), args[2]);
-                    break;
-                }
+                if (args.size() != 2)
+                    continue;
+                filesys->create_dir(path_join(args[0], args[1]));
             } else if (original_cmd == "touch") {
-                switch (args.size()) {
-                case 2:
-                    filesys->create_file(args[0], args[1]);
-                    break;
-                case 3:
-                    filesys->create_file(path_join(args[0], args[1]), args[2]);
-                    break;
-                }
+                if (args.size() != 2)
+                    continue;
+                filesys->create_file(path_join(args[0], args[1]));
             } else if (original_cmd == "rm") {
                 if (args.size() != 2) {
                     std::cout << "Usage: rm <filename>\n";
@@ -269,7 +259,7 @@ public:
 
                 for (uint64_t i = 0; i < n; ++i) {
                     std::string name = prefix + std::to_string(i);
-                    if (filesys->create_dir(args[0], name)) {
+                    if (filesys->create_dir(args[0] + "/" + name)) {
                         success_count++;
                     } else {
                         std::cout << "Failed to create directory: " << name << "\n";
@@ -294,7 +284,7 @@ public:
 
                 for (uint64_t i = 0; i < n; ++i) {
                     std::string name = prefix + std::to_string(i);
-                    if (filesys->create_file(args[0], name)) {
+                    if (filesys->create_file(args[0] + "/" + name)) {
                         success_count++;
                     } else {
                         std::cout << "Failed to create file: " << name << "\n";

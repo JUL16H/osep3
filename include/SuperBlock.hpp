@@ -17,6 +17,7 @@ union SuperBlock {
 
         uint64_t bitmap_block_start_lba;
         uint32_t bitmap_blocks_cnt;
+        uint64_t last_alloc_bitmap_blk_idx;
 
         uint64_t inode_size;
         uint32_t inodes_per_block;
@@ -64,6 +65,7 @@ inline const SuperBlock create_superblock(uint32_t disk_size_gb) {
     rst.data.bitmap_block_start_lba = rst.data.super_blocks_cnt;
     rst.data.bitmap_blocks_cnt =
         (rst.data.bits_per_block + rst.data.total_blocks - 1) / rst.data.bits_per_block;
+    rst.data.last_alloc_bitmap_blk_idx = 0;
 
     rst.data.inode_size = INODE_SIZE;
     rst.data.inode_inline_data_size = INODE_DATA_SIZE;
@@ -72,14 +74,13 @@ inline const SuperBlock create_superblock(uint32_t disk_size_gb) {
     rst.data.inode_valid_block_start_lba =
         rst.data.bitmap_block_start_lba + rst.data.bitmap_blocks_cnt;
 
-    rst.data.inode_blocks_cnt = (((1ull<<30) / rst.data.block_size) >> 7) * rst.data.disk_size_gb;
+    rst.data.inode_blocks_cnt = (((1ull << 30) / rst.data.block_size) >> 7) * rst.data.disk_size_gb;
     rst.data.inodes_cnt = rst.data.inodes_per_block * rst.data.inode_blocks_cnt;
     rst.data.free_inodes = rst.data.inodes_cnt;
     rst.data.inode_valid_blocks_cnt =
         (rst.data.inodes_cnt + rst.data.bits_per_block - 1) / rst.data.bits_per_block;
     rst.data.inode_block_start_lba =
         rst.data.inode_valid_block_start_lba + rst.data.inode_valid_blocks_cnt;
-
 
     rst.data.basic_blocks_cnt = rst.data.super_blocks_cnt + rst.data.bitmap_blocks_cnt +
                                 rst.data.inode_valid_blocks_cnt + rst.data.inode_blocks_cnt;
