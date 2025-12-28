@@ -59,6 +59,8 @@ public:
                     filesys->list_directory(path_join(args[0], args[1]));
                     break;
                 }
+            } else if (original_cmd == "df") {
+                filesys->get_disk_info();
             } else if (original_cmd == "exit") {
                 return;
             } else if (original_cmd == "mkdir") {
@@ -208,6 +210,8 @@ public:
 
                 size_t read_cnt = filesys->read(fd, buffer);
                 if (read_cnt > 0) {
+                    for (uint64_t i = 0; i < buffer.size(); i++)
+                        buffer[i] = buffer[i] == 0 ? '.' : buffer[i];
                     std::string out(buffer.begin(), buffer.begin() + read_cnt);
                     std::cout << out << "\n";
                 } else {

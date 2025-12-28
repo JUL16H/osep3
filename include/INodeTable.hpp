@@ -7,12 +7,6 @@
 struct DirItem {
     uint64_t inode_id;
     char name[FILENAME_SIZE];
-    // DirItem(uint64_t _inode_id = 0, std::string _name = "") {
-    //     std::memset(this, 0, DIRITEM_SIZE);
-    //     inode_id = _inode_id;
-    //     valid = true;
-    //     std::memcpy(name, _name.data(), std::min((size_t)FILENAME_SIZE, _name.size()));
-    // }
 };
 static_assert(sizeof(DirItem) == DIRITEM_SIZE);
 

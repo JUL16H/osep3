@@ -20,7 +20,7 @@ struct FileHandle {
 
 class FileSys {
 public:
-    FileSys(IDisk *_disk) : disk(_disk) {
+    FileSys(std::shared_ptr<IDisk> _disk) : disk(_disk) {
         spdlog::info("[FileSys] 文件系统启动.");
         sb = std::make_shared<SuperBlock>();
         iocontext = std::make_shared<IOContext>(sb, disk);
@@ -138,7 +138,6 @@ public:
         return inodetable->remove_diritem(path_inode.value(), name);
     }
 
-    // HACK:
     void list_directory(std::string path) {
         spdlog::info("[FileSys] 列出目录项 path:{}.", path);
         auto node_id = lookup_path(path);
@@ -157,6 +156,41 @@ public:
             }
             std::cout << "\n";
         }
+    }
+
+    // TODO:
+    void get_disk_info() {
+        spdlog::info("[FileSys] 查询并显示硬盘信息.");
+
+        auto &data = sb->data;
+
+        uint64_t used_blocks = data.total_blocks - data.free_blocks;
+        double block_usage_pct =
+            (data.total_blocks > 0) ? (static_cast<double>(used_blocks) / data.total_blocks * 100.0)
+                                    : 0.0;
+
+        uint64_t used_inodes = data.inodes_cnt - data.free_inodes;
+        double inode_usage_pct = (data.inodes_cnt > 0)
+                                     ? (static_cast<double>(used_inodes) / data.inodes_cnt * 100.0)
+                                     : 0.0;
+
+        std::cout << "==================== Disk Info ====================\n";
+
+        std::cout << std::format("Disk Capacity : {} GB\n", data.disk_size_gb);
+        std::cout << std::format("Block Size    : {} Bytes\n", data.block_size);
+        std::cout << std::format("File System   : v{}\n", data.version);
+
+        std::cout << "------------------- Block Usage -------------------\n";
+        std::cout << std::format("Total Blocks  : {}\n", data.total_blocks);
+        std::cout << std::format("Used Blocks   : {} ({:.2f}%)\n", used_blocks, block_usage_pct);
+        std::cout << std::format("Free Blocks   : {}\n", data.free_blocks);
+
+        std::cout << "------------------- INode Usage -------------------\n";
+        std::cout << std::format("Total INodes  : {}\n", data.inodes_cnt);
+        std::cout << std::format("Used INodes   : {} ({:.2f}%)\n", used_inodes, inode_usage_pct);
+        std::cout << std::format("Free INodes   : {}\n", data.free_inodes);
+
+        std::cout << "===================================================\n";
     }
 
     bool create_file(std::string path, std::string name) {
