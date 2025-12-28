@@ -7,7 +7,6 @@
 struct DirItem {
     uint64_t inode_id;
     char name[FILENAME_SIZE];
-    uint8_t valid;
     // DirItem(uint64_t _inode_id = 0, std::string _name = "") {
     //     std::memset(this, 0, DIRITEM_SIZE);
     //     inode_id = _inode_id;
@@ -27,7 +26,7 @@ class INodeTable {
 public:
     INodeTable(std::shared_ptr<SuperBlock> _sb, std::shared_ptr<IOContext> _ioc,
                std::shared_ptr<BlockAllocator> _blkalloc, std::shared_ptr<BlockIndexer> _blkidxer,
-               uint64_t _cache_size = 1024)
+               uint64_t _cache_size = 16384)
         : sb(_sb), iocontext(_ioc), blkalloc(_blkalloc), blkidxer(_blkidxer),
           max_cache_size(_cache_size) {}
 
@@ -121,10 +120,6 @@ public:
             iocontext->read_block(node->block_lba, data_block_buffer);
             std::memcpy(data.data(), data_block_buffer.data() + offset, size);
         } else if (node->storage_type == StorageType::Index) {
-            std::vector<uint64_t> data_block_lbas =
-                blkidxer->find_blocks(node->block_lba, offset / sb->data.block_size,
-                                      (offset + size + -1) / sb->data.block_size);
-
             uint64_t in_block_offset = offset % sb->data.block_size;
             uint64_t write_pos = 0;
             uint64_t cur_epoch_size;
@@ -132,11 +127,12 @@ public:
             uint64_t remain_size = size;
 
             std::vector<uint8_t> data_block_buffer(sb->data.block_size);
-            for (uint64_t i = 0; i < data_block_lbas.size(); i++) {
-                cur_lba = data_block_lbas[i];
+            for (uint64_t i = offset / sb->data.block_size;
+                 i <= (offset + size - 1) / sb->data.block_size; i++) {
+                cur_lba = blkidxer->find_block(node->block_lba, i).value_or(0);
                 cur_epoch_size = std::min(remain_size, sb->data.block_size - in_block_offset);
                 if (cur_lba != 0) {
-                    iocontext->read_block(data_block_lbas[i], data_block_buffer);
+                    iocontext->read_block(cur_lba, data_block_buffer);
                     std::memcpy(data.data() + write_pos, data_block_buffer.data() + in_block_offset,
                                 cur_epoch_size);
                 } else {
@@ -227,7 +223,7 @@ public:
                 uint64_t batch_size =
                     std::min(data.size(), (size_t)sb->data.block_size - in_blk_offset);
 
-                uint64_t blk_lba = blkidxer->find_block(node->block_lba, cur_blk_idx);
+                uint64_t blk_lba = blkidxer->find_block(node->block_lba, cur_blk_idx).value_or(0);
                 std::vector<uint8_t> blk_buffer(sb->data.block_size);
 
                 if (blk_lba == 0) {
@@ -262,52 +258,45 @@ public:
         if (node->file_type != FileType::Directory)
             return false;
 
-        uint64_t offset = node->size;
-        std::vector<uint8_t> items_buffer(node->size);
-        read_data(id, 0, items_buffer);
-        for (offset = 0; offset < node->size; offset += sb->data.diritem_size) {
-            DirItem *item = reinterpret_cast<DirItem *>(items_buffer.data() + offset);
-            if (!item->valid)
-                break;
-        }
         std::vector<uint8_t> new_item_buffer(sb->data.diritem_size);
         DirItem *new_item = reinterpret_cast<DirItem *>(new_item_buffer.data());
         uint16_t name_size = std::min((size_t)sb->data.filename_size - 1, name.size());
         std::memcpy(new_item->name, name.data(), name_size);
         new_item->name[name_size] = '\0';
         new_item->inode_id = to;
-        new_item->valid = true;
 
         if (find_inode_by_name(id, new_item->name).has_value())
             return false;
 
-        write_data(id, offset, new_item_buffer);
+        write_data(id, node->size, new_item_buffer);
         get(id)->dirty = true;
-        get(to)->node.link_cnt++;
+        if (id != to)
+            get(to)->node.link_cnt++;
         return true;
     }
 
     // TODO: 检查id合法性
     bool remove_diritem(uint64_t id, std::string name) {
+        if (name == "." || name == "..")
+            return false;
         INode *node = &get(id)->node;
-
         std::vector<uint8_t> buffer(sb->data.diritem_size);
         for (uint64_t i = 0; i < node->size; i += sb->data.diritem_size) {
             read_data(id, i, buffer);
             DirItem *item = reinterpret_cast<DirItem *>(buffer.data());
-            if (item->name == name) {
-                INode *item_node = &get(item->inode_id)->node;
-                if (item_node->file_type == FileType::Directory &&
-                    item_node->size != 2 * sb->data.diritem_size)
-                    return false;
-                if (--item_node->link_cnt <= 1) {
-                    free_inode(item->inode_id);
-                }
-                item->valid = false;
-                write_data(id, i, buffer);
-                get(id)->dirty = true;
-                return true;
+            if (item->name != name)
+                continue;
+            INode *item_node = &get(item->inode_id)->node;
+            if (item_node->file_type == FileType::Directory && !is_dir_empty(item->inode_id))
+                return false;
+            if (--item_node->link_cnt == 0) {
+                free_inode(item->inode_id);
             }
+            read_data(id, node->size - sb->data.diritem_size, buffer);
+            write_data(id, i, buffer);
+            node->size -= sb->data.diritem_size;
+            get(id)->dirty = true;
+            return true;
         }
         return false;
     }
@@ -345,7 +334,7 @@ public:
             buffer.resize(size);
             for (uint64_t i = 0; i < buffer.size(); i += sb->data.diritem_size) {
                 auto *item = reinterpret_cast<DirItem *>(buffer.data() + i);
-                if (item->valid && std::string(item->name) == name)
+                if (std::string(item->name) == name)
                     return item->inode_id;
             }
         }
@@ -364,6 +353,11 @@ public:
     void clear_cache() {
         cache_list.clear();
         cache_mp.clear();
+    }
+
+    bool is_dir_empty(uint64_t id) {
+        auto it = get(id);
+        return it->node.size == 2 * sb->data.diritem_size;
     }
 
 private:

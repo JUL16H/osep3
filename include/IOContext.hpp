@@ -15,7 +15,7 @@ class IOContext {
 
 public:
     IOContext(std::shared_ptr<SuperBlock> _sb, std::shared_ptr<IDisk> _disk,
-              uint32_t _cache_size = 1024)
+              uint32_t _cache_size = 16384)
         : sb(_sb), disk(_disk), max_cache_size(_cache_size) {
         spdlog::debug("[IOContext] 从硬盘中读取 Super Block 信息.");
     }

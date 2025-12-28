@@ -152,8 +152,6 @@ public:
             buffer.resize(size);
             for (auto i = 0; i < buffer.size(); i += sb->data.diritem_size) {
                 DirItem *item = reinterpret_cast<DirItem *>(buffer.data() + i);
-                if (!item->valid)
-                    continue;
                 INode node = inodetable->get_inode_info(item->inode_id);
                 std::cout << std::format("{} {} {}\n", item->inode_id, node.size, item->name);
             }

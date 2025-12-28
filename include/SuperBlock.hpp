@@ -35,8 +35,6 @@ union SuperBlock {
         uint64_t root_inode_id;
         uint64_t free_blocks;
 
-        uint64_t BTree_M;
-
         uint32_t bloom_bits;
         uint16_t filename_size;
     } data;
@@ -89,8 +87,6 @@ inline const SuperBlock create_superblock(uint32_t disk_size_gb) {
     rst.data.diritem_size = DIRITEM_SIZE;
 
     rst.data.free_blocks = rst.data.total_blocks - rst.data.basic_blocks_cnt;
-
-    rst.data.BTree_M = BTree_M;
 
     rst.data.filename_size = FILENAME_SIZE;
 
