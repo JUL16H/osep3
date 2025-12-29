@@ -23,7 +23,6 @@ int main() {
     auto filesys = std::make_shared<FileSys>(disk);
 
     filesys->format();
-    filesys->create_dir("/??");
 
     CLI cli(filesys);
     cli.run();

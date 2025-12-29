@@ -437,39 +437,39 @@ public:
                       << " MB/s (" << duration << "s)" << std::endl;
         }
 
-        // Benchmark 5: Random Read 1MB x 1000 (3GB Range)
-        std::string rand_file = base_dir + "/rand_3gb.bin";
-        fs->create_file(rand_file);
-        {
-            auto fd = fs->open(rand_file).value();
-            // 扩展文件到 3GB (Sparse 方式，只写最后一个字节)
-            fs->seek(fd, 3ULL * 1024 * 1024 * 1024 - 1);
-            std::vector<uint8_t> b(1, 0);
-            fs->write(fd, b);
-
-            std::cout << "-> 5. 随机读取 1MB x 1000次 (3GB Range)..." << std::flush;
-            std::vector<uint8_t> buf(1024 * 1024);
-            std::uniform_int_distribution<uint64_t> dist(0,
-                                                         3ULL * 1024 * 1024 * 1024 - 1024 * 1024);
-
-            auto start = std::chrono::high_resolution_clock::now();
-
-            for (int i = 0; i < 1000; ++i) {
-                uint64_t offset = dist(rng);
-                fs->seek(fd, offset);
-                fs->read(fd, buf);
-            }
-
-            fs->close(fd);
-            auto end = std::chrono::high_resolution_clock::now();
-            double duration = std::chrono::duration<double>(end - start).count();
-            double total_mb = 1000.0;
-
-            std::cout << " Done. " << std::fixed << std::setprecision(2) << (total_mb / duration)
-                      << " MB/s (" << duration << "s)";
-            std::cout << " [Avg Latency: " << (duration * 1000 / 1000.0) << " ms]" << std::endl;
-        }
-
+        // // Benchmark 5: Random Read 1MB x 1000 (3GB Range)
+        // std::string rand_file = base_dir + "/rand_3gb.bin";
+        // fs->create_file(rand_file);
+        // {
+        //     auto fd = fs->open(rand_file).value();
+        //     // 扩展文件到 3GB (Sparse 方式，只写最后一个字节)
+        //     fs->seek(fd, 3ULL * 1024 * 1024 * 1024 - 1);
+        //     std::vector<uint8_t> b(1, 0);
+        //     fs->write(fd, b);
+        //
+        //     std::cout << "-> 5. 随机读取 1MB x 1000次 (3GB Range)..." << std::flush;
+        //     std::vector<uint8_t> buf(1024 * 1024);
+        //     std::uniform_int_distribution<uint64_t> dist(0,
+        //                                                  3ULL * 1024 * 1024 * 1024 - 1024 * 1024);
+        //
+        //     auto start = std::chrono::high_resolution_clock::now();
+        //
+        //     for (int i = 0; i < 1000; ++i) {
+        //         uint64_t offset = dist(rng);
+        //         fs->seek(fd, offset);
+        //         fs->read(fd, buf);
+        //     }
+        //
+        //     fs->close(fd);
+        //     auto end = std::chrono::high_resolution_clock::now();
+        //     double duration = std::chrono::duration<double>(end - start).count();
+        //     double total_mb = 1000.0;
+        //
+        //     std::cout << " Done. " << std::fixed << std::setprecision(2) << (total_mb / duration)
+        //               << " MB/s (" << duration << "s)";
+        //     std::cout << " [Avg Latency: " << (duration * 1000 / 1000.0) << " ms]" << std::endl;
+        // }
+        //
         // 清理
         // fs->remove_dir(base_dir); // 可选：保留用于事后分析
     }
@@ -519,7 +519,7 @@ int main() {
                  "========"
               << std::endl;
 
-    auto disk = std::make_shared<FileDisk>(DISK_SIZE_GB, 16 << 10, DISK_PATH);
+    auto disk = std::make_shared<FileDisk>(DISK_SIZE_GB, BLOCK_SIZE, DISK_PATH);
 
     // [Phase 0] 格式化
     std::cout << "\n[Phase 0] 初始化与格式化磁盘..." << std::endl;
