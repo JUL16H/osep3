@@ -24,11 +24,13 @@ public:
     ~LRUCache() { flush_all(); }
 
     std::shared_ptr<const Val> get(Key key) { return access(key)->val; }
+
     std::shared_ptr<Val> get_mut(Key key) {
         auto it = access(key);
         it->dirty = true;
         return it->val;
     }
+
     void flush_all() {
         for (auto &item : cache_list) {
             if (!item.dirty)
